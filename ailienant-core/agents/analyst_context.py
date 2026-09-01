@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agents.workspace_context import build_workspace_overview
-from brain.agent_context import build_agent_context
+from brain.agent_context import build_agent_context, resolve_real_window
 from brain.context_pipeline import ContextBudgetError
 from core import readme_digest
 from core.ast_engine import ASTEngine
@@ -83,13 +83,21 @@ async def fetch_intent_snippets(
         logger.debug("Intent RAG snippets fetch failed (non-fatal): %s", exc)
         return []
 
-# Total context-block token budget per analyst answer tier, sized to fit the
-# smallest model that tier maps to. A faster/smaller model gets a tighter block —
-# retrieval fidelity is unchanged.
+# Floor context-block budget per answer tier, used when the serving model's real
+# window cannot be probed. A static table alone understates it badly: the same
+# tier serves 32k tokens under one BYOM preset and 1M under another, so the
+# budget is measured from the model actually serving the answer and these values
+# only guarantee it is never tighter than it used to be.
 _ANALYST_BUDGET_BY_TIER: Dict[str, int] = {
     "small": 1500, "medium": 3000, "big": 6000, "cloud": 8000,
 }
 _DEFAULT_BUDGET: int = 3000
+
+# Share of the serving model's real window the context block may claim, and the
+# absolute ceiling on it. Without the ceiling a million-token window would buy a
+# context block whose cost and latency dwarf the answer it grounds.
+_ANALYST_BUDGET_FRAC: float = float(os.getenv("AILIENANT_ANALYST_BUDGET_FRAC", "0.10"))
+_ANALYST_BUDGET_CEILING: int = int(os.getenv("AILIENANT_ANALYST_BUDGET_CEILING", "24000"))
 
 # The G3 close-tag repair and raw-data clause are appended AFTER the pipeline's
 # budgeted assembly, so their cost is reserved from the tier budget up front
@@ -316,9 +324,17 @@ async def assemble_analyst_context(
                     + _sandbox_escape(overview, boundary)[:WS_CAP]
                 )
 
-    # Reserve the post-assembly G3 overhead (close-tag repair + raw-data clause)
-    # from the tier budget so the returned block stays within the tier limit.
-    tier_budget = _ANALYST_BUDGET_BY_TIER.get(tier, _DEFAULT_BUDGET)
+    # Budget from the window the serving model actually reports, bounded by the
+    # ceiling and never below the tier floor. Then reserve the post-assembly G3
+    # overhead (close-tag repair + raw-data clause) so the returned block stays
+    # within that budget.
+    tier_floor = _ANALYST_BUDGET_BY_TIER.get(tier, _DEFAULT_BUDGET)
+    real_window = await resolve_real_window({}, tier)
+    # The floor wins over an operator-lowered ceiling: capping below it would make
+    # a configuration knob silently tighten the block instead of only bounding it.
+    tier_budget = max(
+        tier_floor, min(int(real_window * _ANALYST_BUDGET_FRAC), _ANALYST_BUDGET_CEILING)
+    )
     budget = tier_budget - (_G3_OVERHEAD_TOKENS if has_file else 0)
     foundation = [codex_body]
     project = [readme_body, *graphrag_bodies]

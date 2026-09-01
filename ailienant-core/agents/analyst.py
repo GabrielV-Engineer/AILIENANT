@@ -35,7 +35,7 @@ from tools.control_tools import (
 # Test D audits the four logic-agent files for foreign imports on every CI run.
 from brain.personality import soul_manager
 from core.activity_context import bind_model_tier
-from core.config.model_resolver import _TIER_ORDER
+from core.config.model_resolver import tier_for_alias
 from shared.config import MODEL_MEDIUM
 
 logger = logging.getLogger("ANALYST_AGENT")
@@ -47,16 +47,11 @@ DEBUG_MODE: bool = _os.getenv("AILIENANT_ANALYST_DEBUG", "0") != "0"
 
 # The model the whole grill runs on. The alias is the source: the question draft
 # invokes it directly, while the target probe and the pre-draft reasoning pass
-# take the bare tier, derived from it here rather than restated. Keeping one
-# source is what makes an operator's AILIENANT_MODEL_MEDIUM override move all
-# three together — split, the user would read reasoning from one model and get
-# questions written by another. Validated against the resolver's own tier
-# vocabulary; an alias in some other shape degrades to the default tier, which is
-# the same fallback agents/planner.py applies to its own routed alias.
+# take the bare tier derived from it. Keeping one source is what makes an
+# operator's AILIENANT_MODEL_MEDIUM override move all three together — split, the
+# user would read reasoning from one model and get questions written by another.
 _GRILL_MODEL: str = MODEL_MEDIUM
-_GRILL_TIER: str = next(
-    (t for t in _TIER_ORDER if _GRILL_MODEL == f"ailienant/{t}"), "medium"
-)
+_GRILL_TIER: str = tier_for_alias(_GRILL_MODEL, default="medium")
 
 # Token ceiling for the pre-draft reasoning pass. Small on purpose, mirroring the
 # planner's own ceiling: this is the conceptual narrative shown while the user

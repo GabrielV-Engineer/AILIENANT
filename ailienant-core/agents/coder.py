@@ -20,6 +20,7 @@ from agents.prompts import build_boundary_declaration
 # super-step, so a step transition MUST be a returned state delta (never an
 # in-place mutation) or it is lost to Time-Travel and the multi-step loop.
 from agents.orchestrator import _mark_step_status
+from core.config.model_resolver import tier_for_alias
 from core.project_instructions import get_project_instructions
 from brain.agent_context import (
     AMNESIA_ALERT,
@@ -885,8 +886,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         or getattr(state.get("context_metrics"), "routing_decision", None)
     )
     _coder_model = resolve_model_alias_for_routing(_routing_decision, default=MODEL_BIG)
-    _coder_tier = _coder_model.split("/", 1)[1] if _coder_model.startswith("ailienant/") else "big"
-    _coder_tier = _coder_tier if _coder_tier in ("small", "medium", "big", "cloud") else "big"
+    _coder_tier = tier_for_alias(_coder_model, default="big")
     # Bind-and-forget — the enclosing graph node wrapper's `finally` owns
     # cleanup (`core/activity_context.py`'s docstring). Read by every Glass-Box
     # Timeline marker this step pushes from here on, including the tool rows

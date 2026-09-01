@@ -29,10 +29,15 @@ from typing import Any, Awaitable, Callable, Dict, List, MutableMapping, Optiona
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.config import MAX_OBSERVATION_CHARS
+from shared.config import MAX_OBSERVATION_CHARS, MODEL_BIG
+from core.config.model_resolver import tier_for_alias
 from brain.subagent_contracts import SubagentResultEnvelope, SubagentTask
 
 logger = logging.getLogger("SUBAGENT_WORKER")
+
+# The tool loop's own model, as core/tool_dispatch.py resolves it. Named here so
+# the tool budget below is sized against the model that consumes it.
+_TOOL_LOOP_TIER: str = tier_for_alias(MODEL_BIG, default="big")
 
 # Runtime type predicates for the closed response-field vocabulary. Explicit,
 # auditable checks — deliberately not pydantic.create_model metaprogramming.
@@ -111,7 +116,11 @@ async def _resolve_tools(
             intent,
             active_role=role,
             session_mode=session_mode,
-            context_window=await resolve_real_window(state),
+            # The budget this gates is the tool loop's prompt, so the window is the
+            # one the loop's own model (MODEL_BIG, see core/tool_dispatch.py) is
+            # served at — not the final answer's, which is budgeted separately. An
+            # injected reasoner may use another model; nothing here can read that.
+            context_window=await resolve_real_window(state, _TOOL_LOOP_TIER),
             # +1 so the tool_search slot the deferred branch reserves does not
             # cost this subagent one of its usable tools (see agentic_cell.py).
             k=TOOL_RAG_TOP_K + 1,

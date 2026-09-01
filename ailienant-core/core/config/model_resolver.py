@@ -42,6 +42,18 @@ def _directional_order(tier: str) -> list[str]:
         key=lambda t: (abs(_TIER_ORDER.index(t) - idx), -(_TIER_ORDER.index(t) > idx)),
     )
 
+
+def tier_for_alias(model_alias: str, *, default: str) -> str:
+    """The tier an ``ailienant/<tier>`` alias names, else ``default``.
+
+    The tier vocabulary is :data:`_TIER_ORDER`, never a restated literal, so a tier
+    added to the ladder is understood by every caller without a second edit. A model
+    id in any other shape (a raw provider id, a proxy passthrough) names no tier, so
+    the caller's own declared fallback applies rather than one invented here.
+    """
+    return next((t for t in _TIER_ORDER if model_alias == f"ailienant/{t}"), default)
+
+
 _cached: Optional[Dict[str, ModelTarget]] = None
 
 

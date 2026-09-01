@@ -100,6 +100,37 @@ _MARKER_TOKENS: int = PrecisionTokenCounter.count(_TRUNCATION_MARKER)
 _SAFETY_BUFFER: int = 50
 
 
+def _split_discretionary(
+    remaining: int, l4_demand: int, l5_demand: int
+) -> tuple[int, int]:
+    """Divide the post-anchor remainder between L4 and L5 by demand.
+
+    Each layer is offered its declared share; one wanting less releases the
+    difference to the other. That case is the common one — a single-shot agent
+    carries no conversation at all, and a fixed share would strand most of the
+    window unclaimed while the Execution layer holding the mission spec was
+    truncated against the rest. When both want more there is nothing to release
+    and each keeps exactly its proportion, so neither can starve the other.
+    Shares derive from the layers' own ``budget_fraction``, never a second ratio.
+    """
+    share_total = ConversationLayer.budget_fraction + ExecutionLayer.budget_fraction
+    l4_share = int(remaining * ConversationLayer.budget_fraction / share_total)
+    l5_share = remaining - l4_share
+
+    l4_budget = min(l4_demand, l4_share)
+    l5_budget = min(l5_demand, l5_share)
+    # Released capacity goes to whichever layer is still short, and only to a layer
+    # that actually wants it — a budget handed to a layer with nothing to place
+    # would be as stranded as the share it came from.
+    surplus = remaining - l4_budget - l5_budget
+    if surplus > 0:
+        if l4_demand > l4_budget:
+            l4_budget += min(surplus, l4_demand - l4_budget)
+        elif l5_demand > l5_budget:
+            l5_budget += min(surplus, l5_demand - l5_budget)
+    return l4_budget, l5_budget
+
+
 class ContextLayer(ABC):
     """Abstract base for a single budget-managed context layer.
 
@@ -264,13 +295,13 @@ class ContextPipeline:
                 f"buffer={_SAFETY_BUFFER}). Reduce Foundation/Project/Memory content."
             )
 
-        # Phase 2 — split remainder between L4 (2/3) and L5 (1/3)
-        l4_budget = int(remaining * 2 / 3)
-        l5_budget = remaining - l4_budget
+        # Phase 2 — split the remainder between L4 and L5 by what each asks for
+        l4_total = self.conversation.token_count()
+        l5_total = self.execution.token_count()
+        l4_budget, l5_budget = _split_discretionary(remaining, l4_total, l5_total)
 
         # Phase 3 — L4 batch FIFO eviction (O(n) scan, one list mutation)
         l4_evicted = 0
-        l4_total = self.conversation.token_count()
         if l4_total > l4_budget:
             freed = 0
             to_drop = 0
@@ -293,7 +324,6 @@ class ContextPipeline:
         # Phase 4 — L5 tail-truncation (token-exact: marker cost pre-deducted)
         l5_truncated = False
         l5_chunks = self.execution.chunks()
-        l5_total = self.execution.token_count()
         if l5_total > l5_budget:
             n_chunks = len(l5_chunks)
             if n_chunks == 0 or l5_budget < _MARKER_TOKENS:

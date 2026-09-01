@@ -17,6 +17,7 @@ from pydantic import ValidationError
 # this cost until a real planner turn actually runs.
 from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retained for backward refs
 from core.activity_context import bind_model_tier
+from core.config.model_resolver import tier_for_alias
 from core.memory.context_auditor import resolve_model_alias_for_routing
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
@@ -691,8 +692,7 @@ async def run_planner_node(
         # output-budget check a few lines down needs the real served window for
         # THIS model regardless of whether the reasoning narration fires.
         _r_model = decision.effective_model
-        _r_tier = _r_model.split("/", 1)[1] if _r_model.startswith("ailienant/") else "big"
-        _r_tier = _r_tier if _r_tier in ("small", "medium", "big", "cloud") else "big"
+        _r_tier = tier_for_alias(_r_model, default="big")
         # Bind-and-forget (§5.1's cleanup obligation is discharged by the
         # enclosing graph node wrapper — `brain/engine.py::_instrument_node`'s
         # `finally` — not here; see `core/activity_context.py`'s docstring).

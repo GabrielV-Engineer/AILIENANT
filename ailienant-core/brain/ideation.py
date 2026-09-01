@@ -44,14 +44,11 @@ DEBUG_MODE: bool = _os.getenv("AILIENANT_IDEATION_DEBUG", "0") != "0"
 
 # `_distill_brief_llm` pins its call to MODEL_BIG (compressing the whole
 # dialogue into the planner's brief is a high-blast-radius single-shot — see
-# that function's own rationale). Derived from the alias against the
-# resolver's tier vocabulary, mirroring `agents/analyst.py::_GRILL_TIER`,
-# rather than restating "big" as a second literal (§5.7).
-from core.config.model_resolver import _TIER_ORDER  # noqa: E402
+# that function's own rationale). The tier is derived from that same alias so
+# the two cannot drift apart.
+from core.config.model_resolver import tier_for_alias  # noqa: E402
 from shared.config import MODEL_BIG as _SYNTHESIS_MODEL  # noqa: E402
-_SYNTHESIS_TIER: str = next(
-    (t for t in _TIER_ORDER if _SYNTHESIS_MODEL == f"ailienant/{t}"), "big"
-)
+_SYNTHESIS_TIER: str = tier_for_alias(_SYNTHESIS_MODEL, default="big")
 
 # Distill the Socratic dialogue into a SOFT brief — intent + hard constraints +
 # domain glossary. Deliberately NOT the rigid MissionSpecification: a missing field

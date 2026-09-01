@@ -23,6 +23,7 @@ from langchain_core.runnables import RunnableConfig
 
 from tools.token_counter import PrecisionTokenCounter
 from shared.config import MODEL_SMALL
+from core.config.model_resolver import tier_for_alias
 from core.resource_manager import ResourceBroker
 from brain.agent_context import resolve_real_window
 
@@ -30,6 +31,13 @@ logger = logging.getLogger("STATE_SUMMARIZER")
 
 KEEP_LAST_N: int = 5
 THRESHOLD_RATIO: float = 0.80
+
+# The compaction threshold must be measured against the window the model that
+# actually serves this call is served at. Probing a larger tier defers compaction
+# past the point the serving model can hold the history — the failure this trigger
+# exists to prevent. Derived from the same alias the broker below is asked for, so
+# the measured window and the generating model cannot drift apart.
+_SUMMARY_TIER: str = tier_for_alias(MODEL_SMALL, default="small")
 
 # Public prefix tag on the injected system-role summary message (see the
 # compression branch below). Readers that replay `state["messages"]` into an
@@ -104,7 +112,7 @@ async def _run_summarize_node_core(
     # this compaction trigger almost always ran against the static 8192
     # fallback regardless of what model was actually serving the turn.
     profile = state.get("active_llm_profile")
-    context_window: int = await resolve_real_window(state)
+    context_window: int = await resolve_real_window(state, _SUMMARY_TIER)
     model_name: str = profile.model_name if profile else "gpt-4"
     threshold = int(context_window * THRESHOLD_RATIO)
 

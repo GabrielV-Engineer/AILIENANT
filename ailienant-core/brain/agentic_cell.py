@@ -55,11 +55,16 @@ from brain.retry_policy import (
     AGENTIC_CELL_MAX_ITERATIONS,
 )
 from brain.state import VFSFile
-from shared.config import STEERING_ITERATION_GRANT
+from shared.config import MODEL_BIG, STEERING_ITERATION_GRANT
+from core.config.model_resolver import tier_for_alias
 from brain.subagent_tournament import _content_to_vfs
 from brain.subagent_tournament import run_tournament as select_candidate_via_mcts
 
 logger = logging.getLogger("AGENTIC_CELL")
+
+# The default reasoner's own model tier. Named so the tool budget is sized against
+# the model that actually consumes the injected schemas.
+_REASONER_TIER: str = tier_for_alias(MODEL_BIG, default="big")
 
 # Same text ceiling the VFS firewall applies; surface files larger than this are
 # never decoded into the cell's working set.
@@ -229,7 +234,6 @@ async def _default_reasoner(messages: Sequence[Dict[str, str]]) -> List[ToolCall
     """
     import json
 
-    from shared.config import MODEL_BIG
     from tools.llm_gateway import LLMGateway
 
     schema_hint = (
@@ -772,7 +776,10 @@ async def run_agentic_cell_node(
             _compose_cell_intent(state),
             active_role=active_role,
             session_mode=session_mode,
-            context_window=await resolve_real_window(state),
+            # Sized against the window the default reasoner's own model is served
+            # at, so the tool payload matches what consumes it. An injected
+            # `cell_reasoner` may use another model; a Callable declares none.
+            context_window=await resolve_real_window(state, _REASONER_TIER),
             k=TOOL_RAG_TOP_K + 1,
         )
         selected_schemas = list(decision.schemas)

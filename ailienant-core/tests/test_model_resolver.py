@@ -464,3 +464,23 @@ def test_resolve_declared_window_returns_none_for_an_unknown_model() -> None:
 def test_resolve_declared_window_returns_none_for_an_empty_name() -> None:
     assert model_resolver.resolve_declared_window("") is None
     assert model_resolver.resolve_declared_window(None) is None
+
+
+# ── tier_for_alias ───────────────────────────────────────────────────────────
+# One derivation shared by every caller that needs the tier behind an alias, so a
+# tier added to the ladder is understood everywhere without hunting down copies.
+
+
+def test_tier_for_alias_covers_every_ladder_tier() -> None:
+    """Iterates the ladder rather than listing tiers, so a new one is covered here
+    the moment it is declared."""
+    sentinel = "unset"
+    for tier in model_resolver._TIER_ORDER:
+        assert model_resolver.tier_for_alias(f"ailienant/{tier}", default=sentinel) == tier
+
+
+def test_tier_for_alias_falls_back_for_a_non_alias_model() -> None:
+    sentinel = "unset"
+    assert model_resolver.tier_for_alias("gemini/gemini-2.5-flash", default=sentinel) == sentinel
+    assert model_resolver.tier_for_alias("ailienant/nonexistent", default=sentinel) == sentinel
+    assert model_resolver.tier_for_alias("", default=sentinel) == sentinel

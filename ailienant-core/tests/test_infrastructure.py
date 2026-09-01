@@ -119,6 +119,35 @@ async def test_summarizer_uses_model_small() -> None:
 
 
 @pytest.mark.anyio
+async def test_summarizer_budgets_against_the_tier_it_generates_with() -> None:
+    """The compaction threshold is only meaningful against the window of the model
+    that actually serves the call; probing a larger tier defers compaction past the
+    point the serving model can hold the history."""
+    from brain.summarizer import _SUMMARY_TIER
+    from core.config.model_resolver import tier_for_alias
+
+    probed: List[str] = []
+
+    async def _spy_window(state: Dict, tier: str = "big") -> int:
+        probed.append(tier)
+        return 10
+
+    state = _build_state(20, context_window=10)
+    mock_response = MagicMock()
+    mock_response.choices[0].message.content = "Summary."
+
+    with patch("brain.summarizer.resolve_real_window", new=_spy_window), \
+         patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
+        mock_invoke.return_value = mock_response
+        await run_summarize_node(state)
+
+    # Derived from the model the call actually received, so the two cannot drift
+    # apart without this failing.
+    served_model = mock_invoke.call_args.kwargs["model"]
+    assert probed == [tier_for_alias(served_model, default=_SUMMARY_TIER)]
+
+
+@pytest.mark.anyio
 async def test_summarizer_truncates_on_llm_failure() -> None:
     state = _build_state(20, context_window=10)
 

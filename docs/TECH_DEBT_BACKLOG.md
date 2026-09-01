@@ -65,7 +65,7 @@ Decision    Not a defect — see [DECISION] tier.
 | ID | Title (short) | Tier | Type | Target Phase | Schedule |
 |---|---|---|---|---|---|
 | DEBT-014 | brain/swarms.py NodeInputT 6 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
-| DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
+| DEBT-081 | Analyst context budget — empty-L4 under-fill RESOLVED 2026-09-01 (demand-aware split + probed window); Project-layer degrade still drops README+GraphRAG wholesale, L5 still truncates at one uniform ratio | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
 | DEBT-104 | Tournament surface rollback does not delete a candidate's newly introduced paths (`push_vfs_to_surface` only writes) — harmless for the agentic cell's same-file candidates, but `run_tournament_from_dispatch` fans out heterogeneous candidates that can contaminate siblings + the winner restore. 8.15.5 wired tournament winner-selection via a lightweight score/ok selector (not the full MCTS+verify path), so the contamination surface is not yet live; full delete-not-in-base isolation still owed | LOW | Correctness / isolation | future dispatch-isolation slice | Floating |
 | DEBT-105 | Dispatch cost is estimate-based and under-counts on two axes — the reserve estimate under-models output tokens + context growth (admission is lenient), and the worker `cost_usd`/commit path meters only the tool-loop, not the `answer_fn` synthesis call or an `actual > reserved` overage; `finops`/`check_governor` remain the hard ceiling. 8.15.5 wired reserve@origin/commit@synthesize (admission now live); the metering residue remains | LOW | Correctness / cost accounting | future gateway-usage wiring | Floating |
@@ -91,6 +91,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-231 | `planner_retry_count` (4 writes, 0 readers) and `send_telemetry` (0 callers, so `routing_warning` never reaches the user) are dead signals no enabled lint rule can see | LOW | Dead code / observability | wire the consumer or delete the producer | Floating |
 | DEBT-232 | Provider-side reasoning tokens are not budgeted on the strict-JSON `response_format` path — a model billing reasoning inside `completion_tokens` can exhaust `max_tokens` before the object closes | LOW | Correctness gap (mitigated) | future gateway thinking-budget slice | Floating |
 | DEBT-233 | `_inject_reasoning_scaffold` imposes one fixed 4-beat template on every free-form call, so all reasoning across the app shares a shape | LOW | Output quality / uniformity | future gateway prompt slice | Floating |
+| DEBT-234 | Injected `cell_reasoner`/`dispatch_*` seams declare no model, so a non-default injection is budgeted against the default tier's window | LOW | Architecture | unscheduled | Floating |
 
 ---
 
@@ -518,6 +519,17 @@ slightly larger codebase.
   trade one under-fill pattern for another; the real fix needs its own budget-reallocation design across
   `ContextPipeline`'s layer fractions, which is out of scope for a pre-launch debt-closure pass. Not
   required for Phase 13.
+- **Facet (a) RESOLVED (2026-09-01):** `brain/context_pipeline.py::_split_discretionary` replaces the
+  static L4=2/3 / L5=1/3 split with a demand-aware one — each layer is offered its declared share and a
+  layer wanting less releases the difference to the other. Shares derive from the layers' own
+  `budget_fraction` (0.30/0.45), so the ratio is no longer restated. With both layers over-share the
+  allocation is byte-identical to the old split, so nothing regresses when the conversation is real.
+  Separately, `agents/analyst_context.py` now sizes its budget from the serving model's probed window
+  (`resolve_real_window`) bounded by `AILIENANT_ANALYST_BUDGET_FRAC`/`_CEILING`, with the former static
+  tier table kept only as a floor — the analyst was budgeting 3000 tokens against a 1M-token window.
+- **Still open — facets (b) and (c):** the Project-layer `ContextBudgetError` degrade still drops
+  README+GraphRAG wholesale rather than shedding them gradually, and L5 still truncates file+docs at one
+  uniform ratio with no way to prioritize the active file over docs. Tier stays MEDIUM for those.
 
 
 ### DEBT-070 [HIGH · RESOLVED 2026-06-22, 8.10.14] — Async-sleep HITL waits block a coroutine until timeout/response
@@ -1815,6 +1827,16 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Gap:** were it wired to a real tool-calling model, `bind_tools(CELL_TOOLS)` would name each tool after its Pydantic class (`RunTerminalArgs`), while the dispatcher compares against `TOOL_NAME` (`run_terminal`) — so every native tool call would fall through to the registry-fallback branch and resolve as an unknown name.
 - **Why it was left:** 8.20 made the names derivable (`_CellToolArgs.TOOL_NAME`), which is the prerequisite; wiring native tool-calling is a separate decision about whether the cell should stop parsing JSON out of text at all.
 - **What it would take:** either delete the unused seam, or convert `CELL_TOOLS` into properly-named tool objects and switch `_default_reasoner` to the native path behind a capability check.
+- **Phase:** unscheduled.
+
+---
+
+### DEBT-234 [LOW · Floating] — Injected reasoner seams declare no model, so a tool budget can be sized for the wrong one
+
+- **Date:** 2026-09-01
+- **Gap:** `brain/agentic_cell.py`'s `cell_reasoner` and `brain/nodes/subagent_worker_node.py`'s `dispatch_tool_reasoner`/`dispatch_answer_fn` are opaque `Callable`s (`CellReasoner = Callable[[Sequence[Dict[str, str]]], Awaitable[List[ToolCall]]]`). Both nodes now size their deferred-tool budget against a named tier constant derived from the default reasoner's own alias (`MODEL_BIG`), which is correct for the default path. An injected reasoner running some other model would still be budgeted against `big`'s window, and nothing in the protocol lets the caller detect it.
+- **Why it was left:** there is nothing to read. Adding a model declaration means widening the reasoner protocol (a `model` attribute or a config field), which touches every injection site and every test double for a case that has no live consumer — the seams exist for test injection and a future backend swap, and both currently run the default model.
+- **What it would take:** give the reasoner protocol an optional model declaration and have the tool-budget call read it, falling back to the default tier constant when absent.
 - **Phase:** unscheduled.
 
 ---

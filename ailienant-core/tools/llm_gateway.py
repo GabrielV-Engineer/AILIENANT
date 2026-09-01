@@ -987,11 +987,8 @@ class LLMGateway:
         _effective_timeout = timeout  # default; overridden below for a resolved local target
         _effective_max_retries = LLM_MAX_TRANSPORT_RETRIES  # default; reduced below for a local target
         if effective_model.startswith("ailienant/"):
-            from core.config.model_resolver import get_chat_target
-            _alias_tier = effective_model.split("/", 1)[1]
-            _target = get_chat_target(
-                _alias_tier if _alias_tier in ("small", "medium", "big", "cloud") else "medium"
-            )
+            from core.config.model_resolver import get_chat_target, tier_for_alias
+            _target = get_chat_target(tier_for_alias(effective_model, default="medium"))
             if _target is not None:
                 resolved_is_local = _target.is_local
                 _effective_timeout = (
@@ -1231,8 +1228,9 @@ class LLMGateway:
         ``response_format``), so the downstream parser never trips on a fence.
         """
         # Derive the BYOM tier from the alias, mirroring ainvoke's resolution.
-        _alias_tier = model.split("/", 1)[1] if model.startswith("ailienant/") else "medium"
-        tier = _alias_tier if _alias_tier in ("small", "medium", "big", "cloud") else "medium"
+        from core.config.model_resolver import tier_for_alias  # deferred — load order
+
+        tier = tier_for_alias(model, default="medium")
 
         # Forwarded only when the caller actually tagged the call — omitted
         # entirely (not even as action=None) so a test double mocking one of

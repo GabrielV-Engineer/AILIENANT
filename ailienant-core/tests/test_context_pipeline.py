@@ -38,10 +38,14 @@ from brain.context_pipeline import (
     ContextBudgetError,
     ContextChunk,
     ContextPipeline,
+    ConversationLayer,
+    ExecutionLayer,
     FoundationLayer,
     ProjectLayer,
     _MARKER_TOKENS,
+    _SAFETY_BUFFER,
     _TRUNCATION_MARKER,
+    _split_discretionary,
 )
 
 pytestmark = pytest.mark.anyio
@@ -204,13 +208,91 @@ async def test_l5_tail_truncated_within_budget() -> None:
 
 
 async def test_l5_omitted_when_budget_below_marker() -> None:
-    # effective budget after the safety buffer leaves < marker tokens for L5.
-    pipe = ContextPipeline(total_token_budget=60 + _MARKER_TOKENS)
-    pipe.foundation.add(_chunk("foundation", "FND", 1))
+    # The drop path needs the whole discretionary remainder to fall below one
+    # truncation marker. With no conversation competing for it that remainder IS
+    # L5's budget, so size it from the buffer and the marker rather than a
+    # constant that only held under a fixed share.
+    pipe = ContextPipeline(total_token_budget=_SAFETY_BUFFER + _MARKER_TOKENS - 1)
     pipe.execution.add(_chunk("execution", "EXE", 300))
     res = await pipe.assemble()
     assert res.l5_truncated is True
     assert res.l5_tokens == 0  # dropped entirely rather than overflow
+
+
+# ── Invariant 4b: the discretionary split follows demand ───────────────
+
+
+async def test_empty_l4_releases_its_share_to_l5() -> None:
+    """A single-shot agent carries no conversation, so L5 must not be truncated
+    against a share nothing else is claiming."""
+    budget = 1_000
+    pipe = ContextPipeline(total_token_budget=budget)
+    pipe.foundation.add(_chunk("foundation", "FND", 10))
+    payload = _chunk("execution", "EXE", 400)
+    pipe.execution.add(payload)
+
+    res = await pipe.assemble()
+
+    remaining = budget - _SAFETY_BUFFER - res.l1_tokens
+    assert payload.tokens <= remaining, "fixture must fit the released share"
+    assert res.l5_truncated is False
+    assert res.l5_tokens == payload.tokens
+
+
+async def test_empty_l5_releases_its_share_to_l4() -> None:
+    """Symmetric — the release is not Execution-specific."""
+    budget = 1_000
+    pipe = ContextPipeline(total_token_budget=budget)
+    pipe.foundation.add(_chunk("foundation", "FND", 10))
+    turns = [_chunk("conversation", f"C{i}", 20) for i in range(10)]
+    for c in turns:
+        pipe.conversation.add(c)
+
+    res = await pipe.assemble()
+
+    remaining = budget - _SAFETY_BUFFER - res.l1_tokens
+    assert sum(c.tokens for c in turns) <= remaining, "fixture must fit the released share"
+    assert res.l4_evicted == 0
+
+
+async def test_both_layers_over_share_keep_their_declared_proportion() -> None:
+    """Neither layer may starve the other: with both in demand each is held to
+    its own declared fraction of the remainder."""
+    budget = 1_000
+    pipe = ContextPipeline(total_token_budget=budget)
+    pipe.execution.add(_chunk("execution", "EXE", 2_000))
+    for i in range(40):
+        pipe.conversation.add(_chunk("conversation", f"C{i}", 60))
+
+    res = await pipe.assemble()
+
+    remaining = budget - _SAFETY_BUFFER
+    share_total = ConversationLayer.budget_fraction + ExecutionLayer.budget_fraction
+    l4_share = int(remaining * ConversationLayer.budget_fraction / share_total)
+    assert res.l4_tokens <= l4_share
+    assert res.l5_tokens <= remaining - l4_share
+    assert res.total_tokens <= budget
+
+
+def test_split_discretionary_never_over_allocates() -> None:
+    """The split is a pure function bounded by the remainder it divides, at every
+    scale and for any mix of demands — including the degenerate small ones."""
+    for remaining in (0, 1, 2, 3, 5, 100, 9_750):
+        for l4_demand, l5_demand in ((0, 0), (0, 10**6), (10**6, 0), (10**6, 10**6), (1, 1)):
+            l4, l5 = _split_discretionary(remaining, l4_demand, l5_demand)
+            assert l4 >= 0 and l5 >= 0
+            assert l4 + l5 <= remaining
+            assert l4 <= l4_demand and l5 <= l5_demand
+
+
+def test_split_discretionary_matches_the_declared_fractions_when_both_overflow() -> None:
+    """With nothing to release the shares are exactly the layers' own fractions —
+    the proportion a fixed ratio used to hardcode."""
+    share_total = ConversationLayer.budget_fraction + ExecutionLayer.budget_fraction
+    for remaining in (26, 300, 3_000, 9_750, 60_000):
+        l4, l5 = _split_discretionary(remaining, 10**6, 10**6)
+        expected_l4 = int(remaining * ConversationLayer.budget_fraction / share_total)
+        assert (l4, l5) == (expected_l4, remaining - expected_l4)
 
 
 # ── Invariant 5: layer mechanics ───────────────────────────────────────

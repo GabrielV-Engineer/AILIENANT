@@ -439,17 +439,15 @@ def _build_companion_user_payload(request: CompanionAnalysisRequest) -> str:
 
 
 def _resolve_judge_tier() -> str:
-    """The BYOM tier MINI_JUDGE_MODEL resolves to (small/medium/big).
+    """The BYOM tier MINI_JUDGE_MODEL resolves to.
 
     Defaults to "medium" for a non-``ailienant/`` alias or an unrecognized tier
     suffix — matches the fallback ``_call_analyst_llm`` always used before this
     was extracted into a shared helper.
     """
-    if MINI_JUDGE_MODEL.startswith("ailienant/"):
-        _alias_tier = MINI_JUDGE_MODEL.split("/", 1)[1]
-        if _alias_tier in ("small", "medium", "big", "cloud"):
-            return _alias_tier
-    return "medium"
+    from core.config.model_resolver import tier_for_alias  # deferred — load order
+
+    return tier_for_alias(MINI_JUDGE_MODEL, default="medium")
 
 
 def _resolve_companion_llm_timeout(tier: str, max_tokens: int) -> float:

@@ -11,6 +11,7 @@ Covers the four ADR-703 invariants:
 from __future__ import annotations
 
 import re
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -143,6 +144,35 @@ async def test_codex_self_knowledge_injected(tmp_path) -> None:
     out = await assemble_analyst_context([str(f)], None, "s1", project_root=str(tmp_path))
     assert "Codex" in out                     # codex section header
     assert "GraphRAG" in out                   # a real Codex keyword (AN2 self-knowledge)
+
+
+def test_budget_floor_table_covers_the_resolver_ladder() -> None:
+    """The floor table is indexed by tier, so it must know every tier the resolver
+    can hand it — iterated from the ladder rather than restated here."""
+    from core.config.model_resolver import _TIER_ORDER
+
+    assert set(ac._ANALYST_BUDGET_BY_TIER) == set(_TIER_ORDER)
+
+
+@pytest.mark.anyio
+async def test_budget_measures_the_window_but_never_drops_below_the_floor() -> None:
+    """The block is sized from the serving model's real window, bounded by the
+    ceiling, and never tighter than the tier floor it used to be fixed at."""
+    seen: list[int] = []
+    real_builder = ac.build_agent_context
+
+    async def _capture(*, total_token_budget: int, **kwargs: object) -> object:
+        seen.append(total_token_budget)
+        return await real_builder(total_token_budget=total_token_budget, **kwargs)  # type: ignore[arg-type]
+
+    for tier, floor in ac._ANALYST_BUDGET_BY_TIER.items():
+        for window in (0, floor * 2, ac._ANALYST_BUDGET_CEILING * 100):
+            seen.clear()
+            with patch.object(ac, "resolve_real_window", AsyncMock(return_value=window)), \
+                 patch.object(ac, "build_agent_context", _capture):
+                await assemble_analyst_context([], None, "s1", tier=tier)
+            # No file present, so no G3 overhead is reserved from the budget.
+            assert seen and floor <= seen[0] <= ac._ANALYST_BUDGET_CEILING
 
 
 def test_codex_is_read_once(monkeypatch) -> None:

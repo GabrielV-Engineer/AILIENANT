@@ -25,6 +25,23 @@ This metric is not thermostat-confounded (it counts whether the loss occurs at a
 
 **Raw-data caveat:** `turns` is not cumulative session length — it sawtooths with the thermostat, and for `source="pipeline"` it is the post-eviction L4 chunk count (a different quantity from the summarizer's message count). The gate never sums or medians `turns`; it uses per-session `max(turns)` only as a triviality floor plus the exact per-record event test.
 
+**Data-validity boundary (2026-09-01) — telemetry recorded before this date must not be aggregated
+against this criterion.** Both inputs the event test reads were systematically skewed, in opposite
+directions, so a verdict computed over older records would be noise rather than signal:
+
+- `token_budget` was **overstated** on `source="summarizer"` records. `_run_summarize_node_core` probed
+  the window without a tier, taking `resolve_real_window`'s `"big"` default, while the call itself is
+  served by `MODEL_SMALL`. Since the event test is `total_tokens > int(THRESHOLD_RATIO × token_budget)`,
+  an inflated budget suppresses events → biases toward **NO-GO**.
+- `l5_truncated` was **overstated** on `source="pipeline"` records. The static L4=2/3 / L5=1/3 split gave
+  L5 a third of the discretionary remainder even though L4 is always empty on the single-shot agent
+  paths, so L5 truncated (and, near the marker floor, dropped) far more often than the real window
+  required → biases toward **GO**.
+
+Both are fixed (see `DEBT-081` facet (a); `brain/summarizer.py::_SUMMARY_TIER` and
+`brain/context_pipeline.py::_split_discretionary`). Start the dogfood collection window from a log
+written after this fix, or the sample has to be discarded and re-gathered.
+
 Synthetic corpora (below) are supporting characterization only — proof the instrumentation fires end-to-end, never the deciding number. Until real volume is representative, the verdict stays **PROVISIONAL**.
 
 ### Synthetic corpus characterization (supporting data, not binding)
