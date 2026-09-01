@@ -23,7 +23,7 @@
  * dispatch controller mutates — wsStatus, occStatus, telemetry, snapshot, indexing,
  * lockedFiles, config, workspaceFolder, budget*, messages, nattMessages,
  * hitlPending, isStreaming, activeTaskId, attachedItems, nattAttachedItems, toasts,
- * tps. Local component state retains activeModelId, orchestrationMode, dreaming*.
+ * tps. Local component state retains dreaming*.
  */
 import type { ExecutionMode } from '../shared/types';
 import type { ReasoningPreset, InferenceTier, PlanWBSStep, TimelineEntry } from '../shared/config';

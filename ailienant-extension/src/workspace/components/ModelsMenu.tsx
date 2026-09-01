@@ -2,17 +2,11 @@ import { useEffect, useState } from 'react';
 import { Icon } from '../../shared/Icon';
 import { vscode } from '../vscode_bridge';
 import { useWorkspaceStore } from '../workspaceStore';
-import type { AilienantConfig, ModelTier } from '../../shared/types';
-import type { OrchestrationMode } from '../../shared/config';
+import type { ModelTier } from '../../shared/types';
+import type { ReasoningPreset } from '../../shared/config';
+import { PRESET_META } from '../hooks/useReasoningPreset';
 
-export type ModelsView = 'switch' | 'orchestration' | 'usage' | 'preset' | 'thinking';
-
-interface ModelInfo {
-    id: string;
-    name: string;
-    provider: string;
-    is_local: boolean;
-}
+export type ModelsView = 'llm-config' | 'usage' | 'preset' | 'thinking';
 
 interface TokenUsage {
     local_tokens: number;
@@ -57,19 +51,18 @@ const EFFORT_DESCRIPTIONS: Record<EffortLevel, string> = {
     deep:     'Adds running the plan\'s own acceptance checks before reporting done.',
 };
 
+const PRESETS: ReasoningPreset[] = ['surgeon', 'architect', 'explorer'];
+
 interface Props {
     view: ModelsView;
-    config: AilienantConfig | null;
-    activeModelId: string;
-    orchestrationMode: OrchestrationMode;
-    onPrefChange: (activeModelId: string, orchestrationMode: OrchestrationMode) => void;
+    preset: ReasoningPreset;
+    onPresetChange: (p: ReasoningPreset) => void;
     onClose: () => void;
 }
 
 const TIERS: ModelTier[] = ['small', 'medium', 'big', 'cloud'];
 
-export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onPrefChange, onClose }: Props): JSX.Element {
-    const [models, setModels] = useState<ModelInfo[] | null>(null);
+export function ModelsMenu({ view, preset, onPresetChange, onClose }: Props): JSX.Element {
     const [usage, setUsage] = useState<TokenUsage | null | 'loading'>('loading');
     const [byomConfig, setByomConfig] = useState<BYOMConfigMsg | null>(null);
     const [activating, setActivating] = useState<string | null>(null);
@@ -85,11 +78,10 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
     useEffect(() => {
         const handler = (event: MessageEvent): void => {
             const msg = event.data as {
-                type: string; models?: ModelInfo[]; usage?: TokenUsage | null;
+                type: string; usage?: TokenUsage | null;
                 data?: BYOMConfigMsg | EffortModeMsg | null;
             };
-            if (msg.type === 'MODELS_LIST') { setModels(msg.models ?? []); }
-            else if (msg.type === 'USAGE_SNAPSHOT') { setUsage(msg.usage ?? null); }
+            if (msg.type === 'USAGE_SNAPSHOT') { setUsage(msg.usage ?? null); }
             else if (msg.type === 'BYOM_CONFIG') {
                 if (msg.data) { setByomConfig(msg.data as BYOMConfigMsg); setActivating(null); }
             } else if (msg.type === 'EFFORT_MODE') {
@@ -98,10 +90,9 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
             }
         };
         window.addEventListener('message', handler);
-        if (view === 'switch') { vscode.postMessage({ type: 'GET_MODELS' }); }
         if (view === 'usage') { vscode.postMessage({ type: 'GET_USAGE' }); }
-        if (view === 'preset' || view === 'orchestration') { vscode.postMessage({ type: 'GET_BYOM_CONFIG' }); }
-        if (view === 'orchestration') { vscode.postMessage({ type: 'GET_EFFORT_MODE' }); }
+        if (view === 'preset' || view === 'llm-config') { vscode.postMessage({ type: 'GET_BYOM_CONFIG' }); }
+        if (view === 'llm-config') { vscode.postMessage({ type: 'GET_EFFORT_MODE' }); }
         return () => window.removeEventListener('message', handler);
     }, [view]);
 
@@ -123,89 +114,20 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
         return `+${est.extra_calls} call(s), ${approx}${est.seconds_per_extra_call}s each`;
     };
 
-    // The active BYOM preset's real tier→model mapping — the same data the
-    // 'preset' view above already fetches correctly via GET_BYOM_CONFIG.
-    // `config.tiers` (the AilienantConfig prop) is sourced from a local
-    // ailienant-config.json file that is never written anywhere in this
-    // project, so it is always empty; kept only as a last-resort fallback.
+    // The active BYOM preset's real tier→model mapping, fetched via GET_BYOM_CONFIG.
     const activePresetTiers = byomConfig?.presets.find(p => p.id === byomConfig.active_preset_id)?.tiers;
 
-    if (view === 'switch') {
+    if (view === 'llm-config') {
         return (
             <div className="ws-models-body">
-                {models === null ? (
-                    <div className="ws-models-empty">Loading models…</div>
-                ) : models.length === 0 ? (
-                    <div className="ws-models-empty">
-                        <span>No models discovered.</span>
-                        <button
-                            className="ws-core-menu-btn"
-                            onClick={() => { vscode.postMessage({ type: 'OPEN_DASHBOARD', tab: 'byom' }); onClose(); }}
-                        >
-                            <Icon name="plug" size={13} /> Configure models →
-                        </button>
-                    </div>
-                ) : (
-                    <div className="ws-models-list">
-                        {models.map(m => (
-                            <button
-                                key={m.id}
-                                className="ws-models-row"
-                                data-active={m.id === activeModelId ? 'true' : 'false'}
-                                onClick={() => { onPrefChange(m.id, 'manual'); onClose(); }}
-                            >
-                                <div className="ws-models-row-text">
-                                    <span className="ws-models-row-name">{m.name}</span>
-                                    <span className="ws-models-row-meta">
-                                        <span className="ws-tag">{m.provider}</span>
-                                        <span className="ws-tag">{m.is_local ? 'local' : 'cloud'}</span>
-                                    </span>
-                                </div>
-                                {m.id === activeModelId && <Icon name="check" size={13} />}
-                            </button>
-                        ))}
-                    </div>
-                )}
-                <p className="ws-models-note">Selecting a model pins it as the preferred default (manual mode).</p>
-            </div>
-        );
-    }
-
-    if (view === 'orchestration') {
-        return (
-            <div className="ws-models-body">
-                <button
-                    className="ws-mode-row"
-                    data-active={orchestrationMode === 'manual' ? 'true' : 'false'}
-                    onClick={() => onPrefChange(activeModelId, 'manual')}
-                >
-                    <div className="ws-mode-row-text">
-                        <span className="ws-mode-row-title">Manual — single model</span>
-                        <span className="ws-mode-row-desc">
-                            {activeModelId ? `Pinned: ${activeModelId}` : 'No model selected — pick one in Switch model'}
-                        </span>
-                    </div>
-                </button>
-                <button
-                    className="ws-mode-row"
-                    data-active={orchestrationMode === 'auto' ? 'true' : 'false'}
-                    onClick={() => onPrefChange(activeModelId, 'auto')}
-                >
-                    <div className="ws-mode-row-text">
-                        <span className="ws-mode-row-title">Auto — tiered orchestration</span>
-                        <span className="ws-mode-row-desc">Router picks small / medium / big / cloud per task</span>
-                    </div>
-                </button>
-                {orchestrationMode === 'auto' && (
-                    <div className="ws-models-tiers">
-                        {TIERS.map(t => (
-                            <div key={t} className="ws-models-tier">
-                                <span className="ws-models-tier-name">{t}</span>
-                                <span className="ws-models-tier-model">{activePresetTiers?.[t] ?? config?.tiers?.[t] ?? '—'}</span>
-                            </div>
-                        ))}
-                    </div>
-                )}
+                <div className="ws-models-tiers">
+                    {TIERS.map(t => (
+                        <div key={t} className="ws-models-tier">
+                            <span className="ws-models-tier-name">{t}</span>
+                            <span className="ws-models-tier-model">{activePresetTiers?.[t] ?? '—'}</span>
+                        </div>
+                    ))}
+                </div>
                 <p className="ws-models-note">Tier → model mapping is configured in the dashboard BYOM panel.</p>
 
                 <div className="ws-models-section-title">Effort Budget</div>
@@ -230,6 +152,27 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
                         </div>
                     </button>
                 ))}
+
+                <div className="ws-models-section-title">Reasoning preset</div>
+                {PRESETS.map(p => {
+                    const meta = PRESET_META[p];
+                    return (
+                        <button
+                            key={p}
+                            className="ws-mode-row"
+                            data-active={preset === p ? 'true' : 'false'}
+                            onClick={() => onPresetChange(p)}
+                        >
+                            <div className="ws-mode-row-text">
+                                <span className="ws-mode-row-title">
+                                    <Icon name={meta.icon} size={12} />
+                                    <span>{meta.label}</span>
+                                </span>
+                                <span className="ws-mode-row-desc">{meta.desc}</span>
+                            </div>
+                        </button>
+                    );
+                })}
             </div>
         );
     }

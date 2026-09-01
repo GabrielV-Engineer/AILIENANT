@@ -12,7 +12,7 @@ import { InlineMutationManager } from '../core/InlineMutationManager';
 import { GrammarLexer } from '../core/GrammarLexer';
 import { StreamingCodeTokenizer } from '../core/StreamingCodeTokenizer';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
-import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS, WsConnectionStatus } from '../shared/config';
+import { BudgetLimitMode, DreamingProfile, WORKSPACE_STATE_KEYS, WsConnectionStatus } from '../shared/config';
 import { APIClient } from '../api/api_client';
 import type { EffortLevel } from '../api/api_client';
 import type { AilienantConfig, Session } from '../shared/types';
@@ -1383,11 +1383,6 @@ export class WorkspacePanelManager {
                     this._saveTranscript(session.id, { messages: msgs, nattMessages: natt });
                     break;
                 }
-                case 'GET_MODELS': {
-                    const models = await APIClient.getInstance().fetchAvailableModels();
-                    panel.webview.postMessage({ type: 'MODELS_LIST', models });
-                    break;
-                }
                 case 'GET_USAGE': {
                     const usage = await APIClient.getInstance().fetchTokenUsage();
                     panel.webview.postMessage({ type: 'USAGE_SNAPSHOT', usage });
@@ -1413,13 +1408,6 @@ export class WorkspacePanelManager {
                     const mode = (data.mode as EffortLevel | undefined) ?? 'balanced';
                     const effort = await APIClient.getInstance().saveEffortMode(mode);
                     panel.webview.postMessage({ type: 'EFFORT_MODE', data: effort });
-                    break;
-                }
-                case 'SET_MODEL_PREFERENCE': {
-                    const activeModelId     = (data.activeModelId as string | undefined) ?? '';
-                    const orchestrationMode = (data.orchestrationMode as OrchestrationMode | undefined) ?? 'auto';
-                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.activeModelId, activeModelId);
-                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.orchestrationMode, orchestrationMode);
                     break;
                 }
                 case 'OPEN_WORKSPACE': {
@@ -1670,8 +1658,6 @@ export class WorkspacePanelManager {
             budgetLimitMode:  this._workspaceState.get<BudgetLimitMode>(WORKSPACE_STATE_KEYS.budgetLimitMode, 'none'),
             budgetWeeklyUsd:  this._workspaceState.get<number>(WORKSPACE_STATE_KEYS.budgetWeeklyUsd, 20),
             budgetMonthlyUsd: this._workspaceState.get<number>(WORKSPACE_STATE_KEYS.budgetMonthlyUsd, 50),
-            activeModelId:    this._workspaceState.get<string>(WORKSPACE_STATE_KEYS.activeModelId, ''),
-            orchestrationMode: this._workspaceState.get<OrchestrationMode>(WORKSPACE_STATE_KEYS.orchestrationMode, 'auto'),
             workspaceFolder:  vscode.workspace.workspaceFolders?.[0]?.name ?? '',
             developerMode:    vscode.workspace.getConfiguration('ailienant').get<boolean>('developerMode', false),
             initialMessages:     transcript.messages,      // Phase 7.9.B.20 — restore chat

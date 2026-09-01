@@ -32,9 +32,6 @@ export type WsConnectionStatus = "connected" | "reconnecting" | "disconnected";
 
 export type BudgetLimitMode = 'weekly' | 'monthly' | 'none';
 
-// 7.9.A.7 — Models menu. 'manual' pins one model (no routing); 'auto' uses tiered orchestration.
-export type OrchestrationMode = 'manual' | 'auto';
-
 export type OccStatus = "clear" | "soft_conflict" | "hard_conflict";
 
 export interface TelemetryFrame {
@@ -336,6 +333,4 @@ export const WORKSPACE_STATE_KEYS = {
     budgetLimitMode:   "ailienant.budgetLimitMode",
     budgetWeeklyUsd:   "ailienant.budgetWeeklyUsd",
     budgetMonthlyUsd:  "ailienant.budgetMonthlyUsd",
-    activeModelId:     "ailienant.activeModelId",
-    orchestrationMode: "ailienant.orchestrationMode",
 } as const;

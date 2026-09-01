@@ -54,14 +54,6 @@ export interface TaskPayload {
     accepted_plan?: boolean;
 }
 
-// Phase 1.6.3 — Model discovery response schema (mirrors FastAPI ModelInfo).
-export interface ModelInfo {
-    id: string;       // LiteLLM alias, e.g. "ailienant/medium"
-    name: string;     // Underlying model, e.g. "llama3.1"
-    provider: string; // "ollama" | "openai" | "anthropic" | etc.
-    is_local: boolean;
-}
-
 // 7.9.A.7 — Token usage snapshot (mirrors GET /api/v1/telemetry/tokens).
 export interface TokenUsage {
     local_tokens: number;
@@ -241,26 +233,6 @@ export class APIClient {
             return { signalled: Boolean(data?.signalled) };
         } catch {
             return { signalled: false };
-        }
-    }
-
-    /**
-     * Phase 1.6.3 — Fetch available models from the discovery endpoint.
-     * Tries LiteLLM proxy first; falls back to direct Ollama scan if proxy is down.
-     * Returns empty array on any network error (non-blocking).
-     */
-    public async fetchAvailableModels(): Promise<ModelInfo[]> {
-        try {
-            const response = await fetch(`${this._baseUrl}/models/available`, {
-                method: 'GET',
-                headers: { ...this._authHeaders() },
-                signal: AbortSignal.timeout(3000),
-            });
-            if (!response.ok) { return []; }
-            const data = await response.json();
-            return (data.models ?? []) as ModelInfo[];
-        } catch {
-            return [];
         }
     }
 

@@ -4,11 +4,10 @@ import { vscode } from '../vscode_bridge';
 import { ModelsMenu, type ModelsView } from './ModelsMenu';
 import { CustomizeMenu, type CustomizeView } from './CustomizeMenu';
 import { SkillsMenu, type SkillsView } from './SkillsMenu';
-import type { AilienantConfig } from '../../shared/types';
-import type { OrchestrationMode } from '../../shared/config';
+import type { ReasoningPreset } from '../../shared/config';
 
 type SubView = ModelsView | CustomizeView | SkillsView;
-const MODELS_VIEWS: ModelsView[] = ['switch', 'orchestration', 'usage', 'preset', 'thinking'];
+const MODELS_VIEWS: ModelsView[] = ['llm-config', 'usage', 'preset', 'thinking'];
 const SKILLS_VIEWS: SkillsView[] = ['skills-insert', 'skills-create'];
 
 interface MenuItem {
@@ -30,13 +29,11 @@ interface MenuSection {
 interface Props {
     query: string;
     activeTaskId?: string;
-    config: AilienantConfig | null;
-    activeModelId: string;
-    orchestrationMode: OrchestrationMode;
+    preset: ReasoningPreset;
+    onPresetChange: (p: ReasoningPreset) => void;
     /** Host-side `ailienant.developerMode`. Gates the Developer section, whose
      *  command runs arbitrary shell in the workspace root. */
     developerMode: boolean;
-    onPrefChange: (activeModelId: string, orchestrationMode: OrchestrationMode) => void;
     onOpenContext: () => void;
     onClose: () => void;
     /** Dismissal that is not a command decision (a press outside the menu).
@@ -46,8 +43,7 @@ interface Props {
 }
 
 const VIEW_TITLES: Record<SubView, string> = {
-    switch:          'Switch model',
-    orchestration:   'Orchestration mode',
+    'llm-config':    'LLM configuration',
     usage:           'Account & Usage',
     preset:          'Switch model preset',
     thinking:        'Native Thinking',
@@ -61,8 +57,8 @@ const VIEW_TITLES: Record<SubView, string> = {
 };
 
 export function CommandPalette({
-    query, activeTaskId, config, activeModelId, orchestrationMode, developerMode,
-    onPrefChange, onOpenContext, onClose, onDismiss,
+    query, activeTaskId, preset, onPresetChange, developerMode,
+    onOpenContext, onClose, onDismiss,
 }: Props): JSX.Element | null {
     const [view, setView] = useState<'root' | SubView>('root');
     const [focused, setFocused] = useState(0);
@@ -105,8 +101,7 @@ export function CommandPalette({
             id: 'models',
             title: '/models — Brain',
             items: [
-                { key: 'mdl-switch',  cmd: '/models switch',        label: 'Switch model',        desc: 'Pick the active model from discovered list',   icon: 'cpu',     opensView: true, run: () => setView('switch') },
-                { key: 'mdl-orch',   cmd: '/models orchestration', label: 'Orchestration mode',  desc: 'Manual single-model vs. auto tier routing',    icon: 'network', opensView: true, run: () => setView('orchestration') },
+                { key: 'mdl-config', cmd: '/models llm-config',    label: 'LLM configuration',   desc: 'Tier routing, effort budget, and reasoning preset', icon: 'network', opensView: true, run: () => setView('llm-config') },
                 { key: 'mdl-usage',  cmd: '/models usage',         label: 'Account & Usage',     desc: 'Token counts and estimated cost this session',  icon: 'wallet',  opensView: true, run: () => setView('usage') },
                 { key: 'mdl-preset', cmd: '/models preset',        label: 'Switch model preset', desc: 'Apply a saved model configuration preset',     icon: 'sparkles',  opensView: true, run: () => setView('preset') },
                 { key: 'mdl-think',  cmd: '/models thinking',      label: 'Native Thinking',     desc: 'Toggle real-time reasoning stream (on by default)', icon: 'brain', opensView: true, run: () => setView('thinking') },
@@ -220,10 +215,8 @@ export function CommandPalette({
                 {isModels ? (
                     <ModelsMenu
                         view={view as ModelsView}
-                        config={config}
-                        activeModelId={activeModelId}
-                        orchestrationMode={orchestrationMode}
-                        onPrefChange={onPrefChange}
+                        preset={preset}
+                        onPresetChange={onPresetChange}
                         onClose={onClose}
                     />
                 ) : isSkills ? (

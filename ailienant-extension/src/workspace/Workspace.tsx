@@ -4,7 +4,7 @@ import * as Popover from '@radix-ui/react-popover';
 import { vscode } from './vscode_bridge';
 import { useWorkspaceStore } from './workspaceStore';
 import { useChatStore } from './chatStore';
-import { DreamingProfile, OrchestrationMode, DiffBlockShape, BudgetLimitMode } from '../shared/config';
+import { DreamingProfile, DiffBlockShape, BudgetLimitMode } from '../shared/config';
 import type { ExecutionMode } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { Icon } from '../shared/Icon';
@@ -137,8 +137,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // ── Local UI-only state (never touched by the WS dispatch) ──
     const [dreamingActive, setDreamingActive] = useState(false);
     const [dreamingProfile, setDreamingProfile] = useState<DreamingProfile>('Hybrid');
-    const [activeModelId, setActiveModelId] = useState<string>(initial.activeModelId ?? '');
-    const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>(initial.orchestrationMode ?? 'auto');
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // ── Compaction fold state (session-transcript declutter) ──
@@ -349,12 +347,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const handleDreamingToggle = useCallback((next: boolean, p: DreamingProfile) => {
         setDreamingActive(next);
         setDreamingProfile(p);
-    }, []);
-
-    const handleModelPrefChange = useCallback((id: string, m: OrchestrationMode) => {
-        setActiveModelId(id);
-        setOrchestrationMode(m);
-        vscode.postMessage({ type: 'SET_MODEL_PREFERENCE', activeModelId: id, orchestrationMode: m });
     }, []);
 
     const handleNattSubmit = useCallback((text: string) => {
@@ -842,9 +834,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 dreamingActive={dreamingActive}
                                 dreamingProfile={dreamingProfile}
                                 onDreamingToggle={handleDreamingToggle}
-                                activeModelId={activeModelId}
-                                orchestrationMode={orchestrationMode}
-                                onModelPrefChange={handleModelPrefChange}
                                 sessionId={initial.sessionId}
                                 onSubmit={handleSubmit}
                                 onSteer={handleSteer}

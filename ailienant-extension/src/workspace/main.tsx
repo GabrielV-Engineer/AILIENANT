@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Workspace } from './Workspace';
 import type { Message, NattMessage } from './types';
 import type { AilienantConfig } from '../shared/types';
-import type { BudgetLimitMode, OrchestrationMode } from '../shared/config';
+import type { BudgetLimitMode } from '../shared/config';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 /**
@@ -36,8 +36,6 @@ interface InitialAttrs {
     budgetLimitMode:  BudgetLimitMode;
     budgetWeeklyUsd:  number;
     budgetMonthlyUsd: number;
-    activeModelId:    string;
-    orchestrationMode: OrchestrationMode;
     workspaceFolder:  string;
     initialMessages:     Message[];      // Phase 7.9.B.20 — restored chat transcript
     initialNattMessages: NattMessage[];  // Phase 7.9.B.20 — restored analyst transcript
@@ -53,8 +51,6 @@ function readInitial(root: HTMLElement): InitialAttrs {
         budgetLimitMode:  'none',
         budgetWeeklyUsd:  20,
         budgetMonthlyUsd: 50,
-        activeModelId:    '',
-        orchestrationMode: 'auto',
         workspaceFolder:  '',
         initialMessages:     [],
         initialNattMessages: [],

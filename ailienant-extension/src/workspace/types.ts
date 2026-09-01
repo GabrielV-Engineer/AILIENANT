@@ -8,7 +8,7 @@
  */
 import type {
     ASTToken, ToolCallShape, CellRunShape, PlanWBSStep, DiffBlockShape, TimelineEntry,
-    BudgetLimitMode, OrchestrationMode,
+    BudgetLimitMode,
 } from '../shared/config';
 import type { AilienantConfig } from '../shared/types';
 import type { CoderCompanionPayload } from '../api/contracts';
@@ -147,8 +147,6 @@ export interface InitialState {
     budgetLimitMode:  BudgetLimitMode;
     budgetWeeklyUsd:  number;
     budgetMonthlyUsd: number;
-    activeModelId:    string;
-    orchestrationMode: OrchestrationMode;
     workspaceFolder:  string;
     /** Host-side `ailienant.developerMode`. Gates developer-only affordances that
      *  execute arbitrary shell; a host that omits it is treated as off. */

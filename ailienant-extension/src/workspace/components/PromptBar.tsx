@@ -10,7 +10,7 @@ import { useAutoResizeTextarea } from '../hooks/useAutoResizeTextarea';
 import { vscode } from '../vscode_bridge';
 import type { AilienantConfig, ExecutionMode } from '../../shared/types';
 import type {
-    ReasoningPreset, DreamingProfile, OrchestrationMode, MentionItem,
+    ReasoningPreset, DreamingProfile, MentionItem,
 } from '../../shared/config';
 import { useWorkspaceStore } from '../workspaceStore';
 import { useChatStore } from '../chatStore';
@@ -31,10 +31,6 @@ interface Props {
     dreamingActive: boolean;
     dreamingProfile: DreamingProfile;
     onDreamingToggle: (active: boolean, profile: DreamingProfile) => void;
-    // Models menu preferences
-    activeModelId: string;
-    orchestrationMode: OrchestrationMode;
-    onModelPrefChange: (activeModelId: string, orchestrationMode: OrchestrationMode) => void;
     /** Phase 7.12.9 (Fix 5) — scopes the prompt draft to this session. */
     sessionId: string;
     // Submit
@@ -48,7 +44,6 @@ export function PromptBar({
     disabled, placeholder, activeTaskId, isAborting, config,
     mode, preset, onModeChange, onPresetChange,
     dreamingActive, dreamingProfile, onDreamingToggle,
-    activeModelId, orchestrationMode, onModelPrefChange,
     sessionId, onSubmit, onSteer, onAbort,
 }: Props): JSX.Element {
     // Phase 7.11.2 — rehydrated panel-lifetime state via workspaceStore.
@@ -247,11 +242,9 @@ export function PromptBar({
                 <CommandPalette
                     query={slashActive ? slashQuery : ''}
                     activeTaskId={activeTaskId}
-                    config={config}
-                    activeModelId={activeModelId}
-                    orchestrationMode={orchestrationMode}
+                    preset={preset}
+                    onPresetChange={onPresetChange}
                     developerMode={developerMode}
-                    onPrefChange={onModelPrefChange}
                     onOpenContext={() => { setContextOpen(true); setPaletteOpen(false); if (slashActive) { setValue(''); } }}
                     onClose={() => { setPaletteOpen(false); if (slashActive) { setValue(''); } }}
                     // A press outside the menu only retracts it. The draft is left
@@ -339,10 +332,8 @@ export function PromptBar({
                 <div className="ws-prompt-tools-right">
                     <ModeMenu
                         mode={mode}
-                        preset={preset}
                         disabled={disabled}
                         onModeChange={onModeChange}
-                        onPresetChange={onPresetChange}
                     />
                     {isTurnActive ? (
                         <Tooltip content={isAborting ? 'Aborting…' : 'Stop current task (Esc)'} side="top">
