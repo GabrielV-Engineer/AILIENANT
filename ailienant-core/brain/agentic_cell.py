@@ -1231,13 +1231,23 @@ async def run_agentic_cell_node(
 
 
 def route_after_cell(state: Dict[str, Any]) -> str:
-    """Loop-back router: re-enter the cell only while the latest verdict says 'continue'."""
+    """Loop-back router: re-enter the cell only while the latest verdict says 'continue'.
+
+    The verdict is the LAST entry carrying a `status`, not the last entry outright:
+    the node appends its verdict record first and then any observations from the
+    same iteration (reads, OCC diagnostics, fallbacks), which are chat messages
+    with no `status`. Reading the tail alone made any iteration that touched a
+    file look like a terminal verdict, ending the loop after one pass with the
+    work unfinished.
+    """
     trajectory: List[Dict[str, Any]] = state.get("agentic_trajectory") or []
-    if not trajectory:
+    verdict = next(
+        (entry for entry in reversed(trajectory) if entry.get("status") is not None),
+        None,
+    )
+    if verdict is None:
         return "contract_guard"
-    if trajectory[-1].get("status") == "continue":
-        return "agentic_cell"
-    return "contract_guard"
+    return "agentic_cell" if verdict.get("status") == "continue" else "contract_guard"
 
 
 # =====================================================================

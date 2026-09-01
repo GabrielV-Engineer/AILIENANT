@@ -564,6 +564,12 @@ class AIlienantGraphState(TypedDict):
     #   distillation's user payload, never to its system prompt) and cleared there.
     #   Scalar overwrite.
     brief_revision_note: Optional[str]
+    # brief_revision_count: how many rewrites this brief has already been through.
+    #   Bounds synthesis_node's draft→review→rewrite self-loop, which was otherwise
+    #   held only by LangGraph's global recursion limit — each pass costs a full
+    #   MODEL_BIG distillation, and exhausting the limit surfaces as an opaque graph
+    #   error rather than a handoff. Scalar overwrite.
+    brief_revision_count: int
     # confirmed_routing_decision (13.1.9/13.1.10): the routing_decision the operator
     #   actually confirmed for this turn — "LOCAL_SMALL" | "LOCAL_MEDIUM" | "LOCAL_BIG"
     #   | "CLOUD", or the raw router pick verbatim in AUTO mode / when the review is

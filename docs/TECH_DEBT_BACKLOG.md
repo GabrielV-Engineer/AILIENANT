@@ -87,6 +87,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-225 | `websocket_endpoint` (`main.py:1326`) is CC 59 (radon grade F) | MEDIUM | Architecture / maintainability | future node-decomposition slice | Floating |
 | DEBT-226 | `TaskService._format_coding_summary` (`core/task_service.py:1623`) is radon grade F | LOW | Architecture / maintainability | future node-decomposition slice | Floating |
 | DEBT-227 | `ValidateWBSDependenciesTool._arun` (`tools/planner_tools.py:116`) is CC 53 (radon grade F) | LOW | Architecture / maintainability | future node-decomposition slice | Floating |
+| DEBT-230 | No gate validates compiled-graph integrity beyond conditional-edge path-maps — `Send()` targets unchecked; four dispatch nodes bypass `assert_declared_channels`; a computed router verdict is invisible to the static gate | MEDIUM | Verification coverage | future graph-integrity slice | Floating |
+| DEBT-231 | `planner_retry_count` (4 writes, 0 readers) and `send_telemetry` (0 callers, so `routing_warning` never reaches the user) are dead signals no enabled lint rule can see | LOW | Dead code / observability | wire the consumer or delete the producer | Floating |
+| DEBT-232 | Provider-side reasoning tokens are not budgeted on the strict-JSON `response_format` path — a model billing reasoning inside `completion_tokens` can exhaust `max_tokens` before the object closes | LOW | Correctness gap (mitigated) | future gateway thinking-budget slice | Floating |
 
 ---
 
@@ -110,6 +113,14 @@ over `ailienant-core`, excluding `venv/`, `tests/`, and cache directories) → *
 KLOC**. `ailienant-extension/src` is not yet included (no `radon`-equivalent SLOC pass wired for
 TypeScript) — extending the ratio there is itself DEBT-166-shaped (advisory, not blocking) and not
 worth a dedicated ticket until the number is tracked over more than one data point.
+
+**Recomputed (2026-08-31, 8.22 closure):** DEBT-230–232 (1 MEDIUM, 2 LOW, filed for what the seam
+audit deliberately did NOT fix) move the dashboard to 0 HIGH, 9 MEDIUM, 17 LOW → weighted 35 ·
+SLOC 41,160 (`radon raw -s`, same exclusions) → **Debt Ratio ≈ 0.85 / KLOC**. The rise is logging,
+not decay: all three items are pre-existing conditions this phase found and named rather than new
+debt it introduced. Worth stating plainly, because it is the shape this metric is worst at — a
+ledger over KNOWN debt cannot fall when an audit converts unknown defects into tracked ones, and
+reading the increase as regression would penalize exactly the work that should be rewarded.
 
 ---
 
@@ -1796,6 +1807,38 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Gap:** were it wired to a real tool-calling model, `bind_tools(CELL_TOOLS)` would name each tool after its Pydantic class (`RunTerminalArgs`), while the dispatcher compares against `TOOL_NAME` (`run_terminal`) — so every native tool call would fall through to the registry-fallback branch and resolve as an unknown name.
 - **Why it was left:** 8.20 made the names derivable (`_CellToolArgs.TOOL_NAME`), which is the prerequisite; wiring native tool-calling is a separate decision about whether the cell should stop parsing JSON out of text at all.
 - **What it would take:** either delete the unused seam, or convert `CELL_TOOLS` into properly-named tool objects and switch `_default_reasoner` to the native path behind a capability check.
+- **Phase:** unscheduled.
+
+---
+
+### DEBT-232 [LOW · Floating] — Provider-side reasoning tokens are not budgeted on the strict-JSON path
+
+- **Date:** 2026-08-31
+- **Gap:** `tools/llm_gateway.py`'s `response_format` branch (`astream_reasoning` → `ainvoke`) sets no thinking/reasoning budget, and a model that bills its own reasoning inside `completion_tokens` (Gemini 2.5 Flash, observed) can therefore spend the whole `max_tokens` allowance on reasoning and return a truncated object. The existing SAFETY INVARIANT in that method guards AILIENANT's OWN prompt scaffold, not the provider's native reasoning — a distinction the invariant's wording does not currently make.
+- **Why it was left:** the incident that surfaced it is fixed at its real cause (the call was sized against a flat 8192 for a 1M-token model; see the 8.22 journal entry), so the budget is no longer tight enough for reasoning to exhaust it. Threading a `thinking` kwarg through `ainvoke` means touching the streaming path's own param-degradation and retry logic (`_THINKING_PARAM_UNSUPPORTED`), which is a wider blast radius than the residual risk justifies.
+- **What it would take:** forward an explicit zero/minimal reasoning budget on the `response_format` branch, reusing the existing `_remember_thinking_unsupported` degradation memo so a provider that rejects the param self-heals once per session.
+- **Phase:** unscheduled.
+
+---
+
+### DEBT-231 [LOW · Floating] — `planner_retry_count` and `send_telemetry` are written/defined but never read
+
+- **Date:** 2026-08-31
+- **Gap:** two dead signals found during the 8.22 seam audit. (1) `planner_retry_count` is written at four `agents/planner.py` exits and declared in `brain/state.py`, but nothing outside tests reads it — it is checkpoint weight with no consumer. (2) `api/websocket_manager.py::send_telemetry` has ZERO callers repo-wide, so `routing_warning` — including the actionable "no cloud provider is configured; staying on a small local model" text `core/memory/context_auditor.py` composes — is computed, persisted to state, and never displayed in any mode.
+- **Why it was left:** each has two defensible resolutions (wire the consumer, or delete the producer and its channel), and picking wrongly for `routing_warning` costs a user-facing signal that a hardware reroute happened. That is a product call, not a cleanup.
+- **What it would take:** for `routing_warning`, call `send_telemetry` from the researcher's exit or fold the warning into the existing status-bar telemetry push, then keep it; for `planner_retry_count`, delete the channel and its four writes unless a retry-rate view is wanted.
+- **Notes:** neither is reachable by any current gate — `ruff.toml` enables only `["E4","E7","E9","F"]` (intra-module), and no dead-code pass (`vulture`, `ts-prune`) is wired. That gap is the general case; see the 8.22 journal entry.
+- **Phase:** unscheduled.
+
+---
+
+### DEBT-230 [MEDIUM · Floating] — No gate validates compiled-graph integrity beyond conditional-edge path-maps
+
+- **Date:** 2026-08-31
+- **Context:** 8.22 shipped `tests/test_graph_path_map_integrity.py`, which asserts that every router's returnable string literals are declared in its own `add_conditional_edges` path-map. That closes the specific seam that made accepting a plan raise `KeyError('step_dispatch')`, but it is one property out of several the compiled graph could be checked for.
+- **Gap:** still unguarded — (1) `Send()` targets are verified by eye, not by a test, against the `add_node` set; (2) `brain/state.py`'s `assert_declared_channels` never runs for `dispatch_origin`/`dispatch_fanout`/`dispatch_gate`/`dispatch_advance`, which `brain/engine.py` adds raw with no `_instrument_node` wrapper, so an undeclared channel write from those four is silently dropped even under pytest; (3) the path-map gate reads literals statically, so a router returning a computed value is invisible to it (`brain/dispatch.py::route_after_synthesis` is confined to `RETURN_NODES` for exactly this reason, but nothing enforces that pattern for a future router).
+- **Why it was left:** the shipped gate covers the failure class that actually bit, and each remaining item is a separate mechanism rather than a variant of the same check.
+- **What it would take:** wrap the four dispatch nodes to restore channel assertion; add a `Send`-target reachability test; consider promoting `RETURN_NODES`-style confinement to a convention the gate can check.
 - **Phase:** unscheduled.
 
 ---

@@ -78,24 +78,47 @@ async def resolve_real_window(state: Mapping[str, Any], tier: str = "big") -> in
     engine can hold. A cloud target is unaffected — no local RAM constraint
     applies, so the architectural ceiling remains correct there.
 
+    A REMOTE target the probe cannot speak to (it is Ollama-only) falls to the
+    window litellm's metadata declares for that model
+    (:func:`resolve_declared_window`) before the conservative constant. Without
+    that step every cloud model was budgeted against
+    :data:`DEFAULT_CONTEXT_BUDGET` regardless of what it actually serves, which
+    sized a structured-output call so small the response was truncated
+    mid-object — and the truncation then surfaced as a schema error.
+
     Falls back to :func:`resolve_context_budget` when the tier cannot be
-    resolved to a concrete target, or when the runtime probe returns unknown
-    (a non-Ollama provider, or a transient probe failure) — never raises, and
-    never returns a number the caller could mistake for "definitely wrong":
-    an unresolved probe simply defers to the existing conservative behaviour.
+    resolved to a concrete target, or when neither the probe nor the declared
+    metadata knows the model — never raises, and never returns a number the
+    caller could mistake for "definitely wrong": an unresolved lookup simply
+    defers to the existing conservative behaviour.
     """
     try:
-        from core.config.model_resolver import get_chat_target, probe_runtime_capabilities, resolve_num_ctx
+        from core.config.model_resolver import (
+            get_chat_target, probe_runtime_capabilities, resolve_declared_window, resolve_num_ctx,
+        )
 
         target = get_chat_target(tier)
         if target is not None:
+            is_local = bool(getattr(target, "is_local", False))
             caps = await probe_runtime_capabilities(target)
             if caps.context_length is not None and caps.context_length > 0:
-                if getattr(target, "is_local", False):
+                if is_local:
                     ram_aware = await resolve_num_ctx(target, min_required=caps.context_length)
                     if ram_aware is not None:
                         return ram_aware
                 return caps.context_length
+            # Probe unknown. A local model's architectural maximum overstates what
+            # this machine can serve, so only a remote target may use the declared
+            # window — the local case keeps the conservative default below.
+            if not is_local:
+                declared = resolve_declared_window(getattr(target, "model", None))
+                if declared:
+                    return declared
+            logger.info(
+                "resolve_real_window: no window known for tier=%s (model=%s) — "
+                "using the conservative default.",
+                tier, getattr(target, "model", None),
+            )
     except Exception:  # noqa: BLE001 — a probe fault must degrade, never block the caller
         logger.debug("resolve_real_window: probe failed for tier=%s", tier, exc_info=True)
     return resolve_context_budget(state)

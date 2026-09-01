@@ -10,15 +10,24 @@
 # auto-executing an unapproved plan and its accept/reject buttons stayed
 # disabled (isTurnActive never cleared) until that whole pass finished.
 
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 from langgraph.graph import END
 
 from brain.engine import route_after_planner
+from brain.state import AIlienantGraphState
 
 
 def _state(session_permission_mode: Any) -> Dict[str, Any]:
-    return {"task_id": "t1", "project_id": "p1", "session_permission_mode": session_permission_mode}
+    # A mission_spec is always present: route_after_planner's no-plan guard ends
+    # the turn before the mode check, so a plan-less state exercises that guard
+    # rather than the mode routing these tests are about.
+    return {
+        "task_id": "t1",
+        "project_id": "p1",
+        "session_permission_mode": session_permission_mode,
+        "mission_spec": object(),
+    }
 
 
 def test_route_after_planner_stops_at_end_for_plan_only() -> None:
@@ -37,3 +46,29 @@ def test_route_after_planner_continues_to_step_dispatch_for_standard_mode() -> N
 
 def test_route_after_planner_continues_to_step_dispatch_when_mode_is_missing() -> None:
     assert route_after_planner(_state(None)) == "step_dispatch"
+
+
+# --- no-plan guard -------------------------------------------------------
+# A planner that produced no mission_spec used to fall through to step_dispatch,
+# which relayed to the coder anyway; the coder's own missing-spec guard then
+# raised an error that rode alongside the planner's real one and obscured it.
+
+
+def test_route_after_planner_ends_the_turn_when_no_plan_was_produced() -> None:
+    no_plan = {"task_id": "t1", "project_id": "p1", "session_permission_mode": "DEFAULT"}
+    assert route_after_planner(no_plan) == END
+
+
+def test_planner_dispatch_exit_ends_the_turn_when_no_plan_was_produced() -> None:
+    """The dispatch-enabled planner exit must agree with route_after_planner."""
+    from brain.engine import _route_planner_dispatch
+
+    no_plan = {"task_id": "t1", "project_id": "p1", "session_permission_mode": "DEFAULT"}
+    assert _route_planner_dispatch(no_plan) == END
+
+
+def test_route_to_coders_dispatches_nothing_without_a_plan() -> None:
+    from brain.engine import route_to_coders
+
+    state = {"task_id": "t1", "project_id": "p1", "mission_spec": None}
+    assert route_to_coders(cast(AIlienantGraphState, state)) == []

@@ -177,6 +177,37 @@ _caps_cache: Dict[str, RuntimeCapabilities] = {}
 _caps_lock = asyncio.Lock()
 
 
+def resolve_declared_window(model_name: Optional[str]) -> Optional[int]:
+    """A model's context window as litellm's own metadata declares it.
+
+    The complement to :func:`probe_runtime_capabilities`, which speaks only to
+    Ollama: for every other provider that probe returns unknown, and a caller
+    that fell straight through to a conservative constant sized a cloud model's
+    budget against a fraction of the window it actually serves — observed as a
+    structured-output call truncated mid-object against a flat 8192 while the
+    model itself served orders of magnitude more.
+
+    Declared, not measured: correct for a hosted model (no local RAM constraint
+    applies) and deliberately NOT used for a local target, whose architectural
+    maximum routinely exceeds what the machine can actually serve — that case
+    stays with the RAM-clamped probe. Returns ``None`` when the name is empty or
+    litellm does not know the model, so the caller keeps its existing fallback.
+    """
+    if not model_name:
+        return None
+    try:
+        import litellm
+
+        info = litellm.get_model_info(model_name)
+    except Exception:  # noqa: BLE001 — unknown model / litellm hiccup → caller falls back
+        logger.debug("Declared-window lookup failed for %s", model_name, exc_info=True)
+        return None
+    if not isinstance(info, dict):
+        return None
+    window = info.get("max_input_tokens") or info.get("max_tokens")
+    return int(window) if isinstance(window, int) and window > 0 else None
+
+
 def _bare_ollama_model_name(litellm_model_id: str) -> str:
     """Strip litellm's ``ollama_chat/`` / ``ollama/`` routing prefix.
 

@@ -447,6 +447,25 @@ def _resolve_chat_system_prompt(task_prompt: str) -> str:
     return "\n\n".join(parts)
 
 
+def dedupe_errors(errors: List[str]) -> List[str]:
+    """Collapse repeated error strings, preserving first-seen order.
+
+    ``errors`` accumulates with ``operator.add`` and LangGraph replays a node from
+    the top on resume, so a node that fails identically either side of an
+    interrupt contributes the same string twice — reaching the user as the same
+    sentence printed back to back. The stored list stays intact for logs and
+    audit; only what is rendered to the user is deduped.
+    """
+    seen: set[str] = set()
+    unique: List[str] = []
+    for err in errors:
+        if err in seen:
+            continue
+        seen.add(err)
+        unique.append(err)
+    return unique
+
+
 # Mirrors the frontend contract (api_client.ts).
 def _format_notes(errors: List[str]) -> str:
     """Render the user-facing note tail for a turn summary, or "" when there is
@@ -455,8 +474,12 @@ def _format_notes(errors: List[str]) -> str:
     Internal self-heal plumbing ("self-heal could not correct …") is a diagnostic
     event, not actionable user feedback — it stays in the errors list for
     logs/audit but never reaches the chat.
+
+    Repeats are collapsed by :func:`dedupe_errors`.
     """
-    user_notes = [e for e in errors if not e.startswith("self-heal could not correct")]
+    user_notes = [
+        e for e in dedupe_errors(errors) if not e.startswith("self-heal could not correct")
+    ]
     return "\n\n_Notes:_ " + "; ".join(user_notes[:5]) if user_notes else ""
 
 
@@ -1345,7 +1368,7 @@ class TaskService:
             # Genuine planner failure (no plan, and not awaiting the user).
             if mission is None:
                 _latency_outcome = "failed"
-                errs = list(final_state.get("errors") or [])
+                errs = dedupe_errors(list(final_state.get("errors") or []))
                 if not errs:
                     # route_after_ideation's defensive "nothing distilled and not
                     # suspended" branch (reason=ideation_no_op, brain/engine.py) ends

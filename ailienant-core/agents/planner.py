@@ -77,7 +77,7 @@ _PLANNER_TIER_FLOOR: str = os.getenv("AILIENANT_PLANNER_TIER_FLOOR", "LOCAL_MEDI
 _EMPTY_WBS_MAX_RETRIES: int = PLANNER_EMPTY_WBS_MAX_RETRIES
 
 
-def _describe_unusable_draft(raw: str) -> str:
+def _describe_unusable_draft(raw: str, truncated: bool = False) -> str:
     """Describe a draft the envelope unwrapper could not turn into an object.
 
     ``_extract_nested_schema_target`` collapses BOTH "the model said nothing"
@@ -88,8 +88,20 @@ def _describe_unusable_draft(raw: str) -> str:
     log forensics pass to establish that the real fault was an unparseable
     response. This turns the same condition into a statement of what actually
     came back, so the next occurrence is one read instead of an investigation.
+
+    ``truncated`` carries the provider's own ``finish_reason == "length"``, which
+    removes the guesswork entirely: the completion was cut at the output ceiling,
+    so no prompt wording will fix it and the budget is the thing to change.
     """
     stripped = (raw or "").strip()
+    if truncated:
+        return (
+            f"the model's response was CUT OFF at the output ceiling "
+            f"(the provider reported finish_reason='length' after "
+            f"{len(stripped)} characters), so the JSON object was never closed. "
+            "This is a budget problem, not a schema or prompt problem: the "
+            "request needs a smaller prompt or a model with a larger window."
+        )
     if not stripped:
         return (
             "the model returned an EMPTY response (0 characters) — no draft was "
@@ -772,6 +784,14 @@ async def run_planner_node(
         # too. Also bounds its own retries; see _EMPTY_WBS_MAX_RETRIES.
         _last_draft_stepless: bool = False
         _stepless_attempts: int = 0
+        _last_draft_truncated: bool = False
+        # The user turn as first composed. Each retry's corrective replaces the
+        # previous one against THIS text rather than appending to the already-
+        # corrected message: appending grew prompt_tokens every attempt, which
+        # shrank the output budget derived from the same window — so the retry
+        # meant to recover from a truncated draft made the next truncation more
+        # likely, and three attempts failed identically.
+        _base_user_turn: str = messages[-1]["content"]
 
         try:
             while retry_count <= MAX_PLANNER_RETRIES:
@@ -789,14 +809,18 @@ async def run_planner_node(
                             "emit the step that verifies it. Return ONLY the raw JSON object."
                         )
                     elif _last_draft_unusable:
-                        # Nothing came back to "fix". The dominant cause of an
-                        # unparseable local-model draft is the completion being
-                        # cut short, so ask for a smaller one rather than
-                        # re-issuing the identical request that just failed.
+                        # Nothing came back to "fix". When the provider itself
+                        # reported the cut (finish_reason=length) this is a
+                        # certainty rather than the usual inference.
+                        _cut = (
+                            "Your previous response was CUT OFF at the output limit"
+                            if _last_draft_truncated
+                            else "Assume the response was cut short before it finished"
+                        )
                         corrective = (
                             f"\n\nYour previous attempt produced NO usable JSON object: "
                             f"{last_validation_err}\n"
-                            f"Assume the response was cut short before it finished. Emit a "
+                            f"{_cut}. Emit a "
                             f"MINIMAL but COMPLETE MissionSpecification this time: 'outcome' in "
                             f"one short sentence, at most 4 tasks, one-line descriptions, and "
                             f"short single-sentence entries in every list. Close every brace. "
@@ -813,7 +837,7 @@ async def run_planner_node(
                         )
                     messages[-1] = {
                         **messages[-1],
-                        "content": messages[-1]["content"] + corrective,
+                        "content": _base_user_turn + corrective,
                     }
 
                 # Joint-budget pre-flight check: measure the REAL prompt (which grows
@@ -862,7 +886,17 @@ async def run_planner_node(
                     # unwrap envelopes (markdown / prose /
                     # top-level key) before validation so a wrapped-but-valid plan no longer
                     # burns a retry. No-match returns the base dict → Pydantic still fails loudly.
-                    await _emit("unwrapping_schema")
+                    #
+                    # Narrated on the first attempt only: this step classifies to the
+                    # same timeline kind as critic_review/critic_rejected/plan_validated,
+                    # so re-emitting it per retry rendered one identical "Reviewing the
+                    # plan" row per attempt. A retry already narrates itself via
+                    # critic_rejected, which carries the attempt number.
+                    if retry_count == 0:
+                        await _emit("unwrapping_schema")
+                    from tools.llm_gateway import was_truncated
+
+                    _last_draft_truncated = was_truncated(session_id)
                     extracted = LLMGateway._extract_nested_schema_target(
                         raw_content, MissionSpecification
                     )
@@ -874,7 +908,9 @@ async def run_planner_node(
                     # reader hunting a contract bug that does not exist.
                     if not extracted:
                         _last_draft_unusable = True
-                        raise ValueError(_describe_unusable_draft(raw_content))
+                        raise ValueError(
+                            _describe_unusable_draft(raw_content, _last_draft_truncated)
+                        )
                     _last_draft_unusable = False
                     mission_plan = MissionSpecification.model_validate(extracted)
                     # A stepless plan is schema-VALID — `tasks` carries no minimum

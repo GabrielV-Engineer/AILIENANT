@@ -453,6 +453,9 @@ async def run_analyst_node(
 
     dispatch_trace: List[Dict[str, Any]] = []
     batch: Optional[GrillQuestionBatch]
+    # Filled by the generator below with why it gave up, so a failure is reported
+    # as what it actually was. Stays empty on the DEBUG path, which cannot fail.
+    _grill_failure: Dict[str, str] = {}
     if DEBUG_MODE:
         logger.info("AnalystAgent (DEBUG): synthetic question batch generated.")
         batch = _debug_grill_batch(round_count)
@@ -487,25 +490,29 @@ async def run_analyst_node(
         )
         await _emit("grill_composing_questions")
         batch = await _generate_grill_questions_llm(
-            messages + new_messages, soul_prompt, context_block, task_id
+            messages + new_messages, soul_prompt, context_block, task_id,
+            failure=_grill_failure,
         )
 
     if batch is None:
-        # The model is unreachable / never produced a valid batch. Surface the
-        # actionable message and end the turn with hitl_pending=True, which
-        # route_after_analyst routes to END — NOT the self-loop, which would
-        # otherwise retry a dead model until the recursion limit.
+        # No usable batch. Name the ACTUAL cause: an unreachable engine and a
+        # model that answered with unusable JSON need opposite responses, and
+        # reporting both as "can't reach the model" sent the user to restart an
+        # engine that was already running. End the turn with hitl_pending=True,
+        # which route_after_analyst routes to END — NOT the self-loop, which
+        # would otherwise retry until the recursion limit.
         from api.websocket_manager import vfs_manager  # deferred: avoids circular import
 
+        _notice = _grill_failure_message(_grill_failure)
         try:
-            await vfs_manager.broadcast_token(task_id, _ANALYST_BYOM_DOWN)
+            await vfs_manager.broadcast_token(task_id, _notice)
             await vfs_manager.broadcast_stream_end(task_id)
         except Exception as exc:  # noqa: BLE001 — a dead socket must not crash the graph
-            logger.debug("AnalystAgent: BYOM-down notice not delivered: %s", exc)
+            logger.debug("AnalystAgent: grill-failure notice not delivered: %s", exc)
         degraded: Dict[str, Any] = {
             "hitl_pending": True,
             "shared_understanding_reached": False,
-            "messages": new_messages + [{"role": "assistant", "content": _ANALYST_BYOM_DOWN}],
+            "messages": new_messages + [{"role": "assistant", "content": _notice}],
             "grill_round_count": round_count + 1,
         }
         if dispatch_trace:
@@ -755,11 +762,40 @@ async def _stream_grill_reasoning(
         logger.debug("grill reasoning pass failed (non-fatal)", exc_info=True)
 
 
+def _is_transport_failure(exc: BaseException) -> bool:
+    """True when ``exc`` means the engine could not be reached at all.
+
+    Separates "no engine answered" from "an engine answered with something
+    unusable". Only the first is fixed by starting a model; reporting the second
+    that way sends the reader to the wrong place entirely.
+    """
+    import httpx
+
+    if isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    try:
+        import litellm
+
+        return isinstance(
+            exc,
+            (
+                litellm.exceptions.APIConnectionError,
+                litellm.exceptions.Timeout,
+                litellm.exceptions.ServiceUnavailableError,
+                litellm.exceptions.InternalServerError,
+            ),
+        )
+    except Exception:  # noqa: BLE001 — litellm shape varies by version; default to "answered"
+        logger.debug("transport-failure classification degraded", exc_info=True)
+        return False
+
+
 async def _generate_grill_questions_llm(
     messages: List[Dict[str, Any]],
     soul_prompt: str,
     context_block: str,
     session_id: str,
+    failure: Optional[Dict[str, str]] = None,
 ) -> Optional[GrillQuestionBatch]:
     """One structured call producing every question the analyst currently needs
     answered, batched together (replaces the old one-question-per-turn stream —
@@ -770,11 +806,14 @@ async def _generate_grill_questions_llm(
     + `model_validate`, mirroring `agents/planner.py`'s retry-with-correction
     shape): retries once on a validation failure with the error folded back in.
 
-    Returns ``None`` when the model is unreachable or never produced a valid
-    batch — distinct from ``GrillQuestionBatch(questions=[])``, which is the
-    model's deliberate "I have enough, hand off" signal. The caller surfaces the
-    actionable BYOM message for ``None`` rather than silently skipping the
-    interview. Never raises — the analyst must never crash the graph.
+    Returns ``None`` when no chat target resolves or the model never produced a
+    valid batch — distinct from ``GrillQuestionBatch(questions=[])``, which is the
+    model's deliberate "I have enough, hand off" signal. Those two causes need
+    OPPOSITE responses from the user (start an engine, versus the model answered
+    but malformed), so the failure is also recorded in ``failure`` for the caller
+    to report accurately; ``None`` alone conflated them and reported a schema
+    failure as an unreachable engine. Never raises — the analyst must never crash
+    the graph.
     """
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
     from core.config.model_resolver import get_chat_target
@@ -785,6 +824,8 @@ async def _generate_grill_questions_llm(
     # raised NoAvailableProviderError immediately instead.
     if get_chat_target(_GRILL_TIER) is None:
         logger.warning("AnalystAgent: no active BYOM chat model — cannot run the grill.")
+        if failure is not None:
+            failure["reason"] = "unreachable"
         return None
 
     llm_messages = _build_grill_llm_messages(messages, soul_prompt, context_block)
@@ -806,6 +847,14 @@ async def _generate_grill_questions_llm(
                 "AnalystAgent grill-question generation failed attempt=%d [%s: %s]",
                 attempt + 1, type(exc).__name__, exc, exc_info=True,
             )
+            if failure is not None:
+                # A transport fault means the engine really is unreachable; anything
+                # else (ValidationError, a JSON fault, a malformed envelope) means it
+                # answered and the answer was unusable — a different fix entirely.
+                failure["reason"] = (
+                    "unreachable" if _is_transport_failure(exc) else "malformed"
+                )
+                failure["detail"] = f"{type(exc).__name__}: {exc}"
             if attempt == 0:
                 llm_messages.append({
                     "role": "user",
@@ -822,6 +871,29 @@ _ANALYST_BYOM_DOWN: str = (
     "I can't reach the configured model right now. Activate a BYOM preset "
     "(Dashboard → BYOM) and make sure its engine is running, then ask me again."
 )
+
+_ANALYST_GRILL_MALFORMED: str = (
+    "The model replied, but not with the structured questions I need to run the "
+    "interview — this usually means the configured model is too small for a "
+    "strict-JSON task. Try a larger tier, or send your request again to plan "
+    "without the interview."
+)
+
+
+def _grill_failure_message(failure: Dict[str, str]) -> str:
+    """The user-facing notice for a grill that produced no batch.
+
+    ``failure["reason"]`` distinguishes an engine that never answered from one
+    that answered unusably. They have opposite fixes, so a single message for
+    both actively misdirects: the malformed case had users restarting an engine
+    that was already running and responding.
+    """
+    if failure.get("reason") == "malformed":
+        detail = failure.get("detail")
+        if detail:
+            logger.info("AnalystAgent: grill batch unusable — %s", detail)
+        return _ANALYST_GRILL_MALFORMED
+    return _ANALYST_BYOM_DOWN
 
 
 def _analyst_failure_message(exc: BaseException) -> str:

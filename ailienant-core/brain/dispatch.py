@@ -52,6 +52,13 @@ DISPATCH_SYNTHESIZE_NODE = "dispatch_synthesize"
 # node — the subgraph must never dangle with nowhere to rejoin.
 _DEFAULT_RETURN_NODE = "step_dispatch"
 
+# The only rejoin points the synthesis edge declares. `dispatch_return_node` is an
+# ordinary checkpointed channel, so a value from a future call site — or a
+# checkpoint restored from a build with different node names — would otherwise
+# reach the path-map as an undeclared key and raise. Both the router and the edge
+# read this set, so they cannot drift apart.
+RETURN_NODES: tuple[str, ...] = (_DEFAULT_RETURN_NODE, "planner_agent")
+
 # Patterns whose orchestration may introduce a second task set (a new round) rather
 # than merely splitting one fixed task list into waves.
 _MULTI_ROUND_PATTERNS = frozenset({"adversarial_verification", "loop_until_done"})
@@ -350,5 +357,17 @@ def dispatch_advance(state: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def route_after_synthesis(state: Mapping[str, Any]) -> str:
-    """Return to the node the emitting agent recorded, defaulting safely."""
-    return str(state.get("dispatch_return_node") or _DEFAULT_RETURN_NODE)
+    """Return to the node the emitting agent recorded, defaulting safely.
+
+    Confined to RETURN_NODES: an unrecognized value degrades to the default rather
+    than reaching the path-map as an undeclared key, which would raise mid-run.
+    """
+    recorded = str(state.get("dispatch_return_node") or "")
+    if recorded not in RETURN_NODES:
+        if recorded:
+            logger.warning(
+                "route_after_synthesis: unrecognized return node %r — rejoining at %s.",
+                recorded, _DEFAULT_RETURN_NODE,
+            )
+        return _DEFAULT_RETURN_NODE
+    return recorded

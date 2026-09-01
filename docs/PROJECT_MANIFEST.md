@@ -908,6 +908,19 @@
 
 ---
 
+### Division 8.22 — Seam Repair (Graph Wiring, Replay Safety, Truncation Reporting) ✅
+
+> A live AUTO/ASK/PLAN session failed six ways at once. Every defect sat in a seam BETWEEN correctly-built parts, which is why 3,379 unit tests, three type checkers and clean lint all passed over them: static analysis is intra-procedural and unit tests are intra-module, so nothing examined the wiring. The most severe — accepting a plan raised `KeyError('step_dispatch')`, reported to the user as an unrelated BYOM problem — was covered by a test asserting the router returns the very value the graph could not route.
+
+- [x] **8.22.0 — Routing spine.** `route_after_summarize`'s accepted-plan verdict added to its own path-map (plan acceptance could never execute); `route_after_cell` reads the last entry carrying a `status` rather than `trajectory[-1]`, which ended the ReAct loop after one iteration whenever it read a file; `dispatch_synthesize`'s planner verdict reroutes through `model_route_gate` like every other path to the planner; `route_after_synthesis` confined to `RETURN_NODES`; a `mission_spec is None → END` guard on both planner exits, mirroring the existing `ideation_no_op` shape; `route_to_coders` dispatches nothing when nothing is dispatchable.
+- [x] **8.22.1 — Path-map integrity gate.** `tests/test_graph_path_map_integrity.py` — for every `add_conditional_edges`, each router's returnable string literals (read statically with `ast`, since exercising every branch would mean rebuilding each router's preconditions and would drift) must be declared in that edge's own path-map. Parametrized per edge, with a guard against passing vacuously if introspection stops finding branches.
+- [x] **8.22.2 — Cloud context windows.** `resolve_declared_window` in `core/config/model_resolver.py`, consulted by `resolve_real_window` for a REMOTE target when the Ollama-only probe returns unknown. Local targets keep the RAM-clamped probe — an architectural maximum overstates what a given machine serves. `api/sessions.py::_resolve_model_window` now delegates to it so the occupancy meter and the agents' budget arithmetic cannot disagree.
+- [x] **8.22.3 — Truncation reporting.** `finish_reason == "length"` recorded per session in the gateway and read by the planner, which now names truncation as itself instead of reporting it as a schema error; the retry corrective replaces rather than appends, since appending grew the prompt and shrank the very budget the retry existed to recover.
+- [x] **8.22.4 — Failure attribution + replay dedupe.** The grill records WHY it produced no batch, so a malformed reply and an unreachable engine read differently (they have opposite fixes); `dedupe_errors` collapses the `operator.add` accumulator's replay duplicates for display, leaving the stored list intact for audit.
+- [x] **8.22.5 — Brief rewrite.** `canSendBriefBack` gates Send back so a blank note cannot produce a payload identical to a cancel; the "Rewrite with a note" button submits when its panel is already open; `_BRIEF_MAX_REVISIONS` bounds the synthesis self-loop, which was held only by LangGraph's global recursion limit.
+
+---
+
 ## PHASE 9 — Native Thinking (Real-Time Reasoning Stream) ✅
 
 > Real-time native model reasoning exposed in a collapsible Thought Box (Claude Extended Thinking / open reasoning models via `reasoning_content`). Strictly transport/orchestration/UI layers — `agents/` untouched.

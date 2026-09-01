@@ -28,7 +28,12 @@ import { useCallback, useRef, useState } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { useHitlResponder } from '../utils/useHitlResponder';
-import { buildBriefDecision, canAcceptBrief, type BriefAction } from '../utils/briefReviewLogic';
+import {
+    buildBriefDecision,
+    canAcceptBrief,
+    canSendBriefBack,
+    type BriefAction,
+} from '../utils/briefReviewLogic';
 import type { HITLIntervention } from './HITLInterventionCard';
 
 export const BRIEF_REVIEW_KIND = 'BRIEF_REVIEW';
@@ -48,6 +53,7 @@ export function BriefReviewCard({ intervention, onResolved }: Props): JSX.Elemen
 
     const edited = draft !== original;
     const acceptable = canAcceptBrief(draft);
+    const sendable = canSendBriefBack(note);
 
     // Every action routes through the same pure mapping (briefReviewLogic) so the
     // payload semantics are pinned by tests rather than by three call sites here.
@@ -58,13 +64,24 @@ export function BriefReviewCard({ intervention, onResolved }: Props): JSX.Elemen
 
     const accept = useCallback(() => decide('accept'), [decide]);
 
-    const openNote = useCallback(() => {
+    const sendBack = useCallback(() => {
+        if (!canSendBriefBack(note)) { return; }
+        decide('rewrite');
+    }, [decide, note]);
+
+    const cancel = useCallback(() => decide('cancel'), [decide]);
+
+    // Opens the note panel, and submits once it is open and carries a steer:
+    // pressing this button again with a note typed used to re-run `openNote` and
+    // do nothing, which reads as the rewrite being silently ignored.
+    const openOrSend = useCallback(() => {
+        if (noteOpen && canSendBriefBack(note)) {
+            sendBack();
+            return;
+        }
         setNoteOpen(true);
         window.setTimeout(() => noteRef.current?.focus(), 0);
-    }, []);
-
-    const sendBack = useCallback(() => decide('rewrite'), [decide]);
-    const cancel = useCallback(() => decide('cancel'), [decide]);
+    }, [noteOpen, note, sendBack]);
 
     const onNoteKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -112,7 +129,7 @@ export function BriefReviewCard({ intervention, onResolved }: Props): JSX.Elemen
                     </button>
                 </Tooltip>
                 <Tooltip content="Send it back to be rewritten from the same dialogue">
-                    <button className="ai-btn" type="button" onClick={openNote} aria-expanded={noteOpen}>
+                    <button className="ai-btn" type="button" onClick={openOrSend} aria-expanded={noteOpen}>
                         <Icon name="pencil" size={13} /><span>Rewrite with a note</span>
                     </button>
                 </Tooltip>
@@ -133,9 +150,17 @@ export function BriefReviewCard({ intervention, onResolved }: Props): JSX.Elemen
                         onChange={(e) => setNote(e.target.value)}
                         onKeyDown={onNoteKey}
                     />
-                    <button className="ai-btn" data-variant="primary" type="button" onClick={sendBack}>
-                        Send back
-                    </button>
+                    <Tooltip content={sendable ? 'Re-distil under this correction' : 'Add a correction first'}>
+                        <button
+                            className="ai-btn"
+                            data-variant="primary"
+                            type="button"
+                            onClick={sendBack}
+                            disabled={!sendable}
+                        >
+                            Send back
+                        </button>
+                    </Tooltip>
                 </div>
             )}
         </div>

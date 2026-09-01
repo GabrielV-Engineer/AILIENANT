@@ -23,6 +23,17 @@ export interface BriefDecision {
 }
 
 /**
+ * Whether Send back may fire. A rewrite carries its steer in `comment`, and the
+ * backend re-distils only when one is present — so a blank note produced a
+ * payload identical to a cancel, ending the turn and re-rendering the very same
+ * brief. That reads as "I asked for changes and got the same text back". The
+ * action is refused instead, exactly as `canAcceptBrief` refuses an empty brief.
+ */
+export function canSendBriefBack(note: string): boolean {
+    return note.trim().length > 0;
+}
+
+/**
  * Whether Accept may fire. An emptied brief cannot be accepted: the backend
  * treats a blank `modified_content` as absent and would silently hand off the
  * original — so the operator would have deleted everything and got the draft
@@ -47,8 +58,10 @@ export function buildBriefDecision(
     }
     if (action === 'rewrite') {
         const trimmed = note.trim();
-        // A rewrite with nothing to steer by is indistinguishable from a cancel,
-        // so it degrades to exactly that rather than burning a distillation.
+        // A rewrite with nothing to steer by IS a cancel on the wire — the
+        // backend cannot tell them apart. `canSendBriefBack` gates the button so
+        // this branch is unreachable from the UI; it stays as the fail-safe for
+        // any other caller.
         return trimmed ? { approved: false, comment: trimmed } : { approved: false };
     }
     return { approved: false };

@@ -384,6 +384,55 @@ async def test_resolve_real_window_falls_back_when_probe_is_unknown() -> None:
     assert window == DEFAULT_CONTEXT_BUDGET
 
 
+async def test_resolve_real_window_uses_the_declared_window_for_a_remote_target() -> None:
+    """The probe is Ollama-only, so a cloud model always came back unknown and was
+    budgeted against the flat default — sizing a 1M-token model at 8192, which
+    truncated structured output mid-object and then read as a schema error."""
+    from core.config.model_resolver import RuntimeCapabilities
+
+    remote = SimpleNamespace(model="gemini/gemini-2.5-flash", is_local=False)
+    with patch("core.config.model_resolver.get_chat_target", return_value=remote), \
+         patch(
+             "core.config.model_resolver.probe_runtime_capabilities",
+             new=AsyncMock(return_value=RuntimeCapabilities(context_length=None, supports_thinking=False)),
+         ), \
+         patch("core.config.model_resolver.resolve_declared_window", return_value=1_048_576):
+        window = await resolve_real_window({}, tier="cloud")
+    assert window == 1_048_576
+
+
+async def test_resolve_real_window_ignores_the_declared_window_for_a_local_target() -> None:
+    """A local model's architectural maximum overstates what this machine can
+    serve, so the declared number must never substitute for the RAM-aware probe —
+    an unknown probe on a local target keeps the conservative default."""
+    from core.config.model_resolver import RuntimeCapabilities
+
+    local = SimpleNamespace(model="ollama_chat/gemma4:e4b", is_local=True)
+    with patch("core.config.model_resolver.get_chat_target", return_value=local), \
+         patch(
+             "core.config.model_resolver.probe_runtime_capabilities",
+             new=AsyncMock(return_value=RuntimeCapabilities(context_length=None, supports_thinking=False)),
+         ), \
+         patch("core.config.model_resolver.resolve_declared_window", return_value=131_072) as declared:
+        window = await resolve_real_window({}, tier="medium")
+    assert window == DEFAULT_CONTEXT_BUDGET
+    declared.assert_not_called()
+
+
+async def test_resolve_real_window_falls_back_when_the_declared_window_is_unknown() -> None:
+    from core.config.model_resolver import RuntimeCapabilities
+
+    remote = SimpleNamespace(model="not-a-real/model-xyz", is_local=False)
+    with patch("core.config.model_resolver.get_chat_target", return_value=remote), \
+         patch(
+             "core.config.model_resolver.probe_runtime_capabilities",
+             new=AsyncMock(return_value=RuntimeCapabilities(context_length=None, supports_thinking=False)),
+         ), \
+         patch("core.config.model_resolver.resolve_declared_window", return_value=None):
+        window = await resolve_real_window({}, tier="cloud")
+    assert window == DEFAULT_CONTEXT_BUDGET
+
+
 async def test_resolve_real_window_falls_back_when_no_target_resolves() -> None:
     with patch("core.config.model_resolver.get_chat_target", return_value=None):
         window = await resolve_real_window({}, tier="big")

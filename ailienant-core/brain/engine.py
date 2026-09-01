@@ -172,10 +172,27 @@ def route_after_planner(state: Dict[str, Any]) -> str:
     normalize_session_mode is required, not a raw comparison — the channel can
     still carry the deprecated "PLAN" alias, which a raw comparison against
     PLAN_ONLY would silently miss.
+
+    A planner that produced no mission_spec ends the turn regardless of mode:
+    dispatching without a plan reaches the coder's own missing-spec guard, whose
+    error then rides alongside the planner's real one and obscures it.
     """
     from core.permissions import SessionPermissionMode, normalize_session_mode, session_mode_from_channel
     from core.telemetry import log_routing_decision
     mode = normalize_session_mode(session_mode_from_channel(state.get("session_permission_mode")))
+    if state.get("mission_spec") is None:
+        log_routing_decision(
+            session_id=state.get("task_id", ""),
+            project_id=state.get("project_id", ""),
+            source="planner_agent",
+            target=str(END),
+            reason="planner_no_plan",
+        )
+        logger.error(
+            "route_after_planner: planner_no_plan — no mission_spec was produced; "
+            "ending the turn instead of dispatching an empty plan."
+        )
+        return END
     if mode is SessionPermissionMode.PLAN_ONLY:
         target = END
         reason = f"session_permission_mode={mode.value} — plan broadcast; turn stops before execution"
@@ -454,11 +471,20 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
         if mission_spec
         else None
     )
+    if first_pending is None:
+        # Nothing dispatchable: no plan at all, or every step already settled.
+        # Relaying anyway reached the coder's own missing-step guard, turning an
+        # empty dispatch into a user-visible error rather than a quiet no-op.
+        logger.info(
+            "RELAY: no dispatchable step (mission_spec=%s) — dispatching nothing.",
+            "absent" if mission_spec is None else "present",
+        )
+        return []
     target = _coder_target(first_pending)
     logger.info(
         "➡️  RELAY: provider=%s, sequential execution → step #%s (%s).",
         provider,
-        first_pending.step_number if first_pending else "None",
+        first_pending.step_number,
         target,
     )
     log_routing_decision(
@@ -478,14 +504,8 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
             target,
             {
                 **state,
-                "active_role": (
-                    first_pending.target_role
-                    if first_pending
-                    else state.get("active_role")
-                ),
-                "current_step_id": (
-                    first_pending.step_number if first_pending else None
-                ),
+                "active_role": first_pending.target_role,
+                "current_step_id": first_pending.step_number,
             },
         )
     ]
@@ -506,9 +526,18 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 def _route_planner_dispatch(state: Dict[str, Any]) -> str:
     """Planner exit: a PLAN_ONLY session stops the turn (mirrors route_after_planner
     below, which owns the non-dispatch path); otherwise fan out to the dispatch
-    subgraph when a plan was emitted, else the normal successor (step_dispatch)."""
+    subgraph when a plan was emitted, else the normal successor (step_dispatch).
+
+    Carries route_after_planner's no-plan guard too — the two planner exits must
+    agree on when there is nothing left to execute."""
     from core.permissions import SessionPermissionMode, normalize_session_mode, session_mode_from_channel
     mode = normalize_session_mode(session_mode_from_channel(state.get("session_permission_mode")))
+    if state.get("mission_spec") is None:
+        logger.error(
+            "_route_planner_dispatch: planner_no_plan — no mission_spec was produced; "
+            "ending the turn instead of dispatching an empty plan."
+        )
+        return END
     if mode is SessionPermissionMode.PLAN_ONLY:
         return END
     return "dispatch_origin" if state.get("dispatch_plan") else "step_dispatch"
@@ -565,9 +594,12 @@ def _wire_dynamic_dispatch(wf: "StateGraph") -> None:
     )
     wf.add_edge("dispatch_advance", "dispatch_origin")
     # Terminal: rejoin the spine at whichever node the emitting agent recorded.
+    # The planner verdict reroutes through model_route_gate like every other path
+    # to the planner — it is the single choke point where a CAUTIOUS/PLAN_ONLY
+    # session reviews the tier, and returning direct silently skipped it.
     wf.add_conditional_edges(
         "dispatch_synthesize", route_after_synthesis,
-        {"step_dispatch": "step_dispatch", "planner_agent": "planner_agent"},
+        {"step_dispatch": "step_dispatch", "planner_agent": "model_route_gate"},
     )
 
 
@@ -582,7 +614,14 @@ workflow.add_edge("summarize_history", "session_delta_aggregator")
 # emits the signal the Planner consumes. researcher_agent → planner_agent closes it.
 workflow.add_conditional_edges(
     "session_delta_aggregator", route_after_summarize,
-    {"planner_agent": "researcher_agent", "ideation_loop": "ideation_loop"},
+    {
+        "planner_agent": "researcher_agent",
+        "ideation_loop": "ideation_loop",
+        # An accepted plan skips planning entirely and goes straight to execution.
+        # Omitting this key made the router's own accepted-plan verdict unroutable,
+        # so approving a plan raised KeyError instead of running it.
+        "step_dispatch": "step_dispatch",
+    },
 )
 # The ideation loop no longer dead-ends: once the Socratic dialogue is distilled it
 # hands the brief to the Actor-Critic PlannerAgent (run once, downstream of ideation

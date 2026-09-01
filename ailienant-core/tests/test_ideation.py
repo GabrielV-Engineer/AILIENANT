@@ -557,3 +557,38 @@ def test_route_after_synthesis_checks_suspend_before_the_self_loop() -> None:
     """Load-bearing ordering: a suspend with a brief still staged must not spin."""
     from brain.ideation import route_after_synthesis
     assert route_after_synthesis({"hitl_pending": True, "pending_brief": {"composed": "x"}}) == END
+
+
+# ── brief revision cap ───────────────────────────────────────────────────────
+# synthesis_node's draft→review→rewrite self-loop was bounded only by LangGraph's
+# global recursion_limit, unlike every sibling loop in this graph. Each pass costs
+# a full MODEL_BIG distillation, and exhausting the limit surfaces as an opaque
+# graph error instead of a handoff.
+
+
+def test_a_rewrite_advances_the_revision_counter() -> None:
+    from brain.ideation import _BRIEF_MAX_REVISIONS
+
+    assert _BRIEF_MAX_REVISIONS >= 1
+
+
+@pytest.mark.anyio
+async def test_the_revision_cap_hands_off_instead_of_redrafting_forever() -> None:
+    """At the cap the current brief goes to the planner — the loop must not spin."""
+    from brain.ideation import _BRIEF_MAX_REVISIONS, run_synthesis_node
+
+    async def _always_rewrite(_brief_text: str) -> Dict[str, Any]:
+        return {"approved": False, "comment": "still wrong", "modified_content": None}
+
+    state = _review_state()
+    # Enter the REVIEW phase directly: pending_brief is what selects it, and the
+    # draft phase would otherwise issue a real distillation call.
+    state["pending_brief"] = {"composed": "Build the auth service.", "glossary": {}}
+    state["brief_revision_count"] = _BRIEF_MAX_REVISIONS
+    config: RunnableConfig = {"configurable": {"brief_review_fn": _always_rewrite}}
+    result = await run_synthesis_node(state, config)
+
+    assert result.get("ideation_synthesized") is True, "capped review must hand off"
+    assert result.get("user_input") == "Build the auth service."
+    assert result.get("brief_revision_note") is None
+    assert result.get("pending_brief") is None

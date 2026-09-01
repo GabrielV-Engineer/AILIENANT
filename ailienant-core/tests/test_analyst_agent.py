@@ -634,3 +634,46 @@ def test_transport_failure_still_reports_the_unreachable_engine() -> None:
     from agents.analyst import _ANALYST_BYOM_DOWN, _analyst_failure_message
 
     assert _analyst_failure_message(ConnectionError("refused")) == _ANALYST_BYOM_DOWN
+
+
+# ── grill failure attribution ────────────────────────────────────────────────
+# _generate_grill_questions_llm used to return a bare None for every failure, so
+# a schema/validation fault reached the user as "I can't reach the configured
+# model" — sending them to restart an engine that was already answering.
+
+
+def test_grill_failure_message_names_a_malformed_reply_as_itself() -> None:
+    from agents.analyst import _ANALYST_BYOM_DOWN, _grill_failure_message
+
+    msg = _grill_failure_message({"reason": "malformed", "detail": "ValidationError: x"})
+    assert msg != _ANALYST_BYOM_DOWN
+    assert "replied" in msg
+
+
+def test_grill_failure_message_reports_an_unreachable_engine_as_byom_down() -> None:
+    from agents.analyst import _ANALYST_BYOM_DOWN, _grill_failure_message
+
+    assert _grill_failure_message({"reason": "unreachable"}) == _ANALYST_BYOM_DOWN
+
+
+def test_grill_failure_message_defaults_to_byom_down_when_uncategorized() -> None:
+    """An unclassified failure keeps the historical message — never a worse guess."""
+    from agents.analyst import _ANALYST_BYOM_DOWN, _grill_failure_message
+
+    assert _grill_failure_message({}) == _ANALYST_BYOM_DOWN
+
+
+def test_transport_faults_and_schema_faults_are_classified_apart() -> None:
+    from pydantic import ValidationError
+
+    from agents.analyst import _is_transport_failure
+    from tools.control_tools import GrillQuestionBatch
+
+    assert _is_transport_failure(ConnectionError("engine down")) is True
+    assert _is_transport_failure(TimeoutError()) is True
+    try:
+        GrillQuestionBatch.model_validate({"questions": "not-a-list"})
+        raise AssertionError("expected a ValidationError")
+    except ValidationError as exc:
+        assert _is_transport_failure(exc) is False
+    assert _is_transport_failure(ValueError("bad json")) is False

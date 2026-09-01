@@ -113,25 +113,18 @@ def _serialize_messages_for_count(messages: object) -> str:
 
 
 def _resolve_model_window(model_name: Optional[str]) -> Optional[int]:
-    """Resolve a model's true context window from litellm's model metadata.
+    """A model's true context window from litellm's metadata.
 
     Several profile build sites hardcode ``context_window`` to a flat default, so
-    the meter would otherwise report the same window for every model. Looking the
-    name up here keeps the reading per-model. Returns ``None`` when the name is
-    empty or litellm does not know the model (e.g. a local GGUF), so the caller
-    falls back to the profile's own field.
+    the meter would otherwise report the same window for every model. Delegates
+    to the resolver's own lookup so the occupancy meter and the agents' budget
+    arithmetic can never disagree about a model's window. Returns ``None`` when
+    litellm does not know the model (e.g. a local GGUF), so the caller falls back
+    to the profile's own field.
     """
-    if not model_name:
-        return None
-    try:
-        import litellm
-        info = litellm.get_model_info(model_name)
-    except Exception:  # noqa: BLE001 — unknown model / litellm hiccup → fall back.
-        return None
-    if not isinstance(info, dict):
-        return None
-    win = info.get("max_input_tokens") or info.get("max_tokens")
-    return int(win) if isinstance(win, int) and win > 0 else None
+    from core.config.model_resolver import resolve_declared_window
+
+    return resolve_declared_window(model_name)
 
 
 def compute_context_occupancy(thread_id: str) -> ContextOccupancy:

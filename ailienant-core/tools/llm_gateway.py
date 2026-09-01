@@ -107,6 +107,40 @@ def _find_superset_node(node: Any, required: "set[str]") -> Optional[Dict[str, A
     return None
 
 
+# ── truncation signal ───────────────────────────────────────────────────────
+# `finish_reason == "length"` is the provider's own statement that it stopped at
+# the output ceiling rather than because the answer was finished — the one
+# unambiguous marker of a truncated completion. It was detected and logged but
+# never reached the caller, so a structured-output caller received an
+# unparseable fragment and reported it as a SCHEMA error, sending the reader to
+# fix a prompt when the real fix is a budget. `acomplete_with_thinking` returns a
+# bare `str`, so the signal rides beside the return value rather than changing
+# the shape every caller unpacks (§10: additive only).
+_last_finish_reason: Dict[str, str] = {}
+
+# One entry per in-flight session; a long-lived process would otherwise retain a
+# key per session for the life of the interpreter.
+_FINISH_REASON_CACHE_MAX: int = 256
+
+
+def _record_finish_reason(session_id: Optional[str], finish_reason: Optional[str]) -> None:
+    """Remember the finish reason of the completion just served for ``session_id``."""
+    if not session_id or not finish_reason:
+        return
+    if len(_last_finish_reason) >= _FINISH_REASON_CACHE_MAX:
+        _last_finish_reason.clear()
+    _last_finish_reason[session_id] = finish_reason
+
+
+def was_truncated(session_id: Optional[str]) -> bool:
+    """True when the last completion served for ``session_id`` hit the output ceiling.
+
+    Read immediately after the call whose outcome is being judged: this records
+    only the most recent completion per session.
+    """
+    return bool(session_id) and _last_finish_reason.get(session_id or "") == "length"
+
+
 def _find_node_with_any_key(node: Any, keys: "set[str]") -> Optional[Dict[str, Any]]:
     """Return the first dict in the tree sharing at least one key with ``keys``.
 
@@ -1133,6 +1167,9 @@ class LLMGateway:
             # the model actually generated, whether the provider itself says the
             # completion was cut short, or what window it was served under. See
             # log_generation_utilization's own docstring for why this exists.
+            # Beyond logging: hand the signal to the caller, which cannot see the
+            # response envelope through the string-returning wrappers.
+            _record_finish_reason(session_id, _finish)
             from core.telemetry_log import log_generation_utilization
             _usage = getattr(response, "usage", None)
             log_generation_utilization(

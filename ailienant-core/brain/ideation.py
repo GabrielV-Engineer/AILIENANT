@@ -62,6 +62,12 @@ _SYNTHESIS_TIER: str = next(
 # additive by construction — no existing consumer changes (SCHEMA_EVOLUTION.MD §10).
 BRIEF_REVIEW_KIND: str = "BRIEF_REVIEW"
 
+# Rewrites of one brief before the current text is handed off regardless. Matches
+# the grill's own round cap: each revision costs a full MODEL_BIG distillation, and
+# a brief still wrong after this many corrections needs a new turn, not another
+# pass over the same dialogue.
+_BRIEF_MAX_REVISIONS: int = 3
+
 _DISTILL_SYSTEM_PROMPT: str = (
     "You are the AnalystAgent closing a Socratic planning dialogue. Distill the "
     "whole conversation into a concise build brief for an autonomous planner — NOT "
@@ -191,6 +197,7 @@ async def run_synthesis_node(
 
     # ── Review phase ──────────────────────────────────────────────────────
     pending: Optional[Dict[str, Any]] = state.get("pending_brief")
+    revisions: int = int(state.get("brief_revision_count", 0) or 0)
     if pending:
         brief_text = str(pending.get("composed") or "")
         decision = await _resolve_brief_review(task_id, brief_text, config)
@@ -225,12 +232,46 @@ async def run_synthesis_node(
             # information, so this re-distils the same dialogue under their steer
             # rather than re-entering the grill — which would also collide with its
             # own round cap, already spent by the time this node runs.
+            if revisions >= _BRIEF_MAX_REVISIONS:
+                # Every sibling loop in this graph carries an explicit bound; without
+                # one here a repeatedly-corrected brief re-drafts until LangGraph's
+                # global recursion limit, burning a MODEL_BIG distillation per pass
+                # and surfacing as an opaque graph error rather than a clear stop.
+                logger.warning(
+                    "SynthesisNode: brief revision cap (%d) reached — handing the "
+                    "current brief to the planner instead of re-drafting again.",
+                    _BRIEF_MAX_REVISIONS,
+                )
+                _gloss_capped = pending.get("glossary") or {}
+                await _emit("handoff_to_planner")
+                return {
+                    "user_input": brief_text,
+                    "ideation_glossary": (
+                        {str(k): str(v) for k, v in _gloss_capped.items()}
+                        if isinstance(_gloss_capped, dict) else {}
+                    ),
+                    "ideation_synthesized": True,
+                    "planner_mode_active": False,
+                    "shared_understanding_reached": True,
+                    "hitl_pending": False,
+                    "pending_brief": None,
+                    "brief_revision_note": None,
+                }
             logger.info("SynthesisNode: brief sent back for a rewrite (%d char note).", len(comment))
-            return {"pending_brief": None, "brief_revision_note": comment}
+            return {
+                "pending_brief": None,
+                "brief_revision_note": comment,
+                "brief_revision_count": revisions + 1,
+            }
 
         # Cancelled with nothing to act on. End the turn rather than guessing:
         # `messages` still holds the whole dialogue, so the operator's next turn
         # continues this thread instead of starting the interview over.
+        #
+        # A rewrite whose note was empty arrives here indistinguishably — the wire
+        # carries only approved=false with no comment. The UI refuses that action
+        # (briefReviewLogic.canSendBriefBack), so reaching this branch means a real
+        # cancel; logged as such rather than silently.
         logger.info("SynthesisNode: brief review cancelled — ending the turn.")
         return {"pending_brief": None, "brief_revision_note": None, "hitl_pending": True}
 

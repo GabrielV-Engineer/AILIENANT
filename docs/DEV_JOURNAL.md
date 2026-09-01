@@ -13,6 +13,15 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.22: Seam Repair — Graph Wiring, Replay Safety, Truncation Reporting — 2026-08-31
+**Status:** COMPLETE | **Gates:** ruff 0 · mypy 0/485 · pyright 0 · pytest 3409 passed/2 skipped · npm compile 0 · npm test 321 passed
+- Shipped: six live failures fixed at their causes — accepting a plan raised `KeyError('step_dispatch')` (the router's accepted-plan verdict was absent from its own path-map) and surfaced as an unrelated BYOM message; the ReAct cell exited after one iteration whenever it read a file; a failed planner still dispatched to the coder, whose derived error then obscured the real one; a cloud model was budgeted at a flat 8192 against a 1M-token window and truncated mid-object; the grill reported schema faults as an unreachable engine; a blank-note brief rewrite was indistinguishable from a cancel.
+- Key decision: the durable fix is `tests/test_graph_path_map_integrity.py`, which asserts every router's returnable values against its own path-map. This class was invisible to every existing gate — `test_routing_spine_repair.py:309` passes while asserting the exact value that crashed the graph 220 lines away, because it tests the function and the defect is in the wiring. The new gate caught two more instances the same day (`route_after_synthesis`, `dispatch_synthesize`).
+- Key decision: the retry corrective now REPLACES rather than appends. Appending grew `prompt_tokens` on every attempt, shrinking the output budget derived from the same window — so the retry meant to recover from a truncated draft made the next truncation likelier, and all three attempts failed identically.
+- Deferred: DEBT-230 — remaining graph-integrity properties (Send-target reachability; four dispatch nodes bypass `assert_declared_channels`); DEBT-231 — `planner_retry_count` and `send_telemetry` are dead signals no enabled lint rule can see; DEBT-232 — provider-side reasoning is still unbudgeted on the strict-JSON path, now mitigated by the correct window.
+
+---
+
 ## 8.21: Mid-Run Operator Steering — 2026-08-31
 **Status:** COMPLETE | **Gates:** ruff 0 · mypy 0/484 · pyright 0 · pytest 3356 passed/2 skipped · npm compile 0 · npm lint 0 · npm test 319 passed
 - Shipped: an operator can now correct or extend a turn already running — type and send while it works, and the instruction is queued for the running runner instead of being silently discarded. Additive `client_steering_message` WS event, a `TaskService` queue, the `_consumed_steering_ids` watermark, a `user`-role replay branch in the agentic cell, a bounded governor grant, and the `PromptBar` route.

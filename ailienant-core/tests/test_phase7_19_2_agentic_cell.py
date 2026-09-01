@@ -180,6 +180,39 @@ def setup_function(_func: Any) -> None:
     ac._session_registry.clear()
 
 
+# ── Loop-back router reads the verdict, not the tail ──────────────────────────
+# The node appends its verdict record FIRST and then the same iteration's
+# observations (reads, OCC diagnostics, fallbacks), which are chat messages with
+# no `status`. Reading trajectory[-1] made any iteration that touched a file look
+# terminal, ending the ReAct loop after one pass with the work unfinished — a
+# silent truncation, since nothing raises.
+
+
+def test_route_after_cell_follows_the_verdict_behind_trailing_observations() -> None:
+    state = {
+        "agentic_trajectory": [
+            {"status": "continue", "iteration": 0},
+            {"role": "system", "content": "[read_file_ast] src/app.py\n..."},
+        ]
+    }
+    assert route_after_cell(state) == "agentic_cell"
+
+
+def test_route_after_cell_stops_on_a_terminal_verdict_behind_observations() -> None:
+    state = {
+        "agentic_trajectory": [
+            {"status": "green", "iteration": 0},
+            {"role": "system", "content": "[read_file_ast] src/app.py\n..."},
+        ]
+    }
+    assert route_after_cell(state) == "contract_guard"
+
+
+def test_route_after_cell_stops_when_no_verdict_was_ever_recorded() -> None:
+    assert route_after_cell({"agentic_trajectory": []}) == "contract_guard"
+    assert route_after_cell({"agentic_trajectory": [{"role": "system"}]}) == "contract_guard"
+
+
 # ── DoD rows ──────────────────────────────────────────────────────────────────
 
 

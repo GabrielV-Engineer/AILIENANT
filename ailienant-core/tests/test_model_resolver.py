@@ -443,3 +443,24 @@ async def test_check_local_admission_degrades_to_admit_on_hardware_read_failure(
             _ollama("ollama_chat/gemma4:e4b"), requested_num_ctx=8192,
         )
     # No exception raised = degraded to admit.
+
+
+# ── resolve_declared_window ──────────────────────────────────────────────────
+# probe_runtime_capabilities speaks only to Ollama, so before this existed every
+# non-Ollama target fell straight through to a flat conservative constant — a
+# cloud model with a million-token window was budgeted at 8192, which truncated a
+# structured-output call mid-object and surfaced as a schema error.
+
+
+def test_resolve_declared_window_reads_a_known_cloud_model() -> None:
+    window = model_resolver.resolve_declared_window("gemini/gemini-2.5-flash")
+    assert window is not None and window > 100_000
+
+
+def test_resolve_declared_window_returns_none_for_an_unknown_model() -> None:
+    assert model_resolver.resolve_declared_window("not-a-real/model-xyz") is None
+
+
+def test_resolve_declared_window_returns_none_for_an_empty_name() -> None:
+    assert model_resolver.resolve_declared_window("") is None
+    assert model_resolver.resolve_declared_window(None) is None
