@@ -805,6 +805,7 @@ export function BYOMPanel(): JSX.Element {
                                                 onChange={e => setEditForm(f => f && ({ ...f, name: e.target.value }))}
                                                 placeholder="Preset name" />
                                         </div>
+                                        <p className="byom-field-hint">For single-model use, set one tier and copy it to the rest.</p>
                                         {Object.entries(TIER_LABELS).map(([key, label]) => (
                                             <div key={key} style={{ marginBottom: 8 }}>
                                                 <label className="db-label">{label} model</label>
@@ -818,6 +819,16 @@ export function BYOMPanel(): JSX.Element {
                                                     {editForm.tiers[key] && (
                                                         <button type="button" className="byom-tier-clear" title="Clear"
                                                             onClick={() => setEditForm(f => f && ({ ...f, tiers: { ...f.tiers, [key]: '' } }))}>×</button>
+                                                    )}
+                                                    {editForm.tiers[key] && (
+                                                        <button type="button" className="byom-tier-copy-all" title="Use this model for all tiers"
+                                                            onClick={() => {
+                                                                const v = editForm.tiers[key];
+                                                                setEditForm(f => f && ({
+                                                                    ...f,
+                                                                    tiers: Object.fromEntries(Object.keys(TIER_LABELS).map(k => [k, v])),
+                                                                }));
+                                                            }}>Use for all</button>
                                                     )}
                                                 </div>
                                             </div>
@@ -900,6 +911,7 @@ export function BYOMPanel(): JSX.Element {
                                 onChange={e => setNewPreset(p => p && ({ ...p, name: e.target.value }))}
                                 placeholder="My Custom Preset" />
                         </div>
+                        <p className="byom-field-hint">For single-model use, set one tier and copy it to the rest.</p>
                         {Object.entries(TIER_LABELS).map(([key, label]) => (
                             <div key={key} style={{ marginBottom: 8 }}>
                                 <label className="db-label">{label} model</label>
@@ -913,6 +925,16 @@ export function BYOMPanel(): JSX.Element {
                                     {newPreset.tiers[key] && (
                                         <button type="button" className="byom-tier-clear" title="Clear"
                                             onClick={() => setNewPreset(p => p && ({ ...p, tiers: { ...p.tiers, [key]: '' } }))}>×</button>
+                                    )}
+                                    {newPreset.tiers[key] && (
+                                        <button type="button" className="byom-tier-copy-all" title="Use this model for all tiers"
+                                            onClick={() => {
+                                                const v = newPreset.tiers[key];
+                                                setNewPreset(p => p && ({
+                                                    ...p,
+                                                    tiers: Object.fromEntries(Object.keys(TIER_LABELS).map(k => [k, v])),
+                                                }));
+                                            }}>Use for all</button>
                                     )}
                                 </div>
                             </div>

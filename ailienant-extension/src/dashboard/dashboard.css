@@ -907,6 +907,29 @@ html, body, #root { height: 100%; }
   color: var(--status-critical);
 }
 
+.byom-tier-copy-all {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.byom-tier-copy-all:hover {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+.byom-field-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+}
+
 /* ── Extensions panel: rows, names, links, clamps ── */
 .db-ext-row {
   border: 1px solid var(--border-subtle);
