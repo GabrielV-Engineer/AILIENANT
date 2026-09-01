@@ -23,6 +23,18 @@ import { HitlNotifier, type HITLApprovalRequestPayload, type HitlMode } from './
 import { getDevcontainerProvisioner, getDevcontainerSessionHandler } from './devcontainerFactory';
 import { handleDevcontainerServerEvent } from './devcontainerExecHandler';
 import { resolveDocEntries } from './docsCatalog';
+import {
+    CORE_READY_POLL_INTERVAL_MS,
+    CORE_READY_TIMEOUT_MS,
+    CORE_STOP_TIMEOUT_MS,
+    killProcessTree,
+    probeRunState,
+    readRunState,
+    resolveReadyOutcome,
+    shouldAdopt,
+    withTimeout,
+    type CoreState,
+} from './coreDiscovery';
 
 /**
  * ABORT_MESH's routing decision, extracted out of the message-handler closure
@@ -95,8 +107,6 @@ export function findFreePort(): Promise<number> {
     });
 }
 
-type CoreState = 'stopped' | 'starting' | 'running' | 'crashed';
-
 export class CoreProcessManager {
     private _proc: cp.ChildProcess | null = null;
     private _state: CoreState = 'stopped';
@@ -105,18 +115,82 @@ export class CoreProcessManager {
     private static readonly MAX_RETRIES = 3;
     private static readonly RETRY_DELAY_MS = 2000;
 
-    readonly port: number;
-    readonly token: string;
+    // Mutable because a Core already serving at activation is adopted at its own
+    // coordinates rather than duplicated, and a restart re-derives both.
+    private _port: number;
+    private _token: string;
+    // Set when the running Core was discovered rather than spawned here. Such a
+    // process has no ChildProcess handle, so its lifecycle is driven by pid.
+    private _adoptedPid: number | null = null;
+    private _restartInFlight: Promise<void> | null = null;
     private readonly _extensionFsPath: string;
+    private readonly _onCoordinates: (port: number, token: string) => void;
 
-    constructor(port: number, token: string, extensionFsPath: string) {
-        this.port = port;
-        this.token = token;
+    constructor(
+        port: number,
+        token: string,
+        extensionFsPath: string,
+        onCoordinates: (port: number, token: string) => void,
+    ) {
+        this._port = port;
+        this._token = token;
         this._extensionFsPath = extensionFsPath;
+        this._onCoordinates = onCoordinates;
         this._outputChannel = vscode.window.createOutputChannel('AILIENANT Core');
     }
 
+    get port(): number { return this._port; }
+    get token(): string { return this._token; }
+
     getState(): CoreState { return this._state; }
+
+    showOutput(): void { this._outputChannel.show(); }
+
+    /** Publish the current coordinates to the API/WS clients. */
+    publishCoordinates(): void { this._onCoordinates(this._port, this._token); }
+
+    /**
+     * Adopt a Core that is already serving, if one is; otherwise spawn our own.
+     *
+     * Adoption is what keeps a Core that outlived its extension host — or one a
+     * developer started by hand, or a second window's — from being duplicated by
+     * a second backend on a different port with a different token. That
+     * divergence is what leaves the extension talking to a port nobody serves.
+     */
+    async adoptOrStart(): Promise<void> {
+        if (await this.adoptIfRunning()) { return; }
+        await this.start();
+    }
+
+    /**
+     * Take over an already-serving Core. Returns whether one was adopted.
+     * The liveness probe, not the file, is the evidence — a stale run-state
+     * points at a dead port and must be ignored rather than trusted.
+     */
+    async adoptIfRunning(): Promise<boolean> {
+        const state = await readRunState();
+        if (state === null) { return false; }
+        const probeOk = await probeRunState(state);
+        if (!shouldAdopt(state, probeOk)) {
+            if (probeOk && !state.token) {
+                this._outputChannel.appendLine(
+                    `[AILIENANT] A Core is serving on 127.0.0.1:${state.port} without an auth token; starting our own instead.`,
+                );
+            }
+            return false;
+        }
+        this._port = state.port;
+        this._token = state.token as string;
+        this._adoptedPid = state.pid;
+        this._onCoordinates(this._port, this._token);
+        // The probe IS the readiness evidence here — nothing to wait for.
+        this._state = 'running';
+        this._crashRetries = 0;
+        this._outputChannel.appendLine(
+            `[AILIENANT] Adopted running Core on 127.0.0.1:${state.port} (pid ${state.pid}).`,
+        );
+        return true;
+    }
 
     async start(): Promise<void> {
         if (this._state === 'starting' || this._state === 'running') { return; }
@@ -125,15 +199,12 @@ export class CoreProcessManager {
         const backendPath = findBackendPath(this._extensionFsPath);
         if (!backendPath) {
             this._state = 'crashed';
-            this._outputChannel.appendLine('[AILIENANT] Cannot locate ailienant-core/. Open the monorepo root as workspace or set ailienant.coreStartCommand.');
+            this._outputChannel.appendLine('[AILIENANT] Cannot locate ailienant-core/. Open the monorepo root as your workspace folder.');
             void vscode.window.showWarningMessage(
                 'AILIENANT: Cannot locate ailienant-core/.',
-                'Show Output', 'Open Settings',
+                'Show Output',
             ).then((choice) => {
                 if (choice === 'Show Output') { this._outputChannel.show(); }
-                if (choice === 'Open Settings') {
-                    void vscode.commands.executeCommand('workbench.action.openSettings', 'ailienant.coreStartCommand');
-                }
             });
             return;
         }
@@ -141,15 +212,15 @@ export class CoreProcessManager {
         const python = findVenvPython(backendPath);
         const env = {
             ...process.env,
-            AILIENANT_API_PORT: String(this.port),
-            AILIENANT_AUTH_TOKEN: this.token,
+            AILIENANT_API_PORT: String(this._port),
+            AILIENANT_AUTH_TOKEN: this._token,
         };
 
-        this._outputChannel.appendLine(`[AILIENANT] Starting Core on 127.0.0.1:${this.port} ...`);
+        this._outputChannel.appendLine(`[AILIENANT] Starting Core on 127.0.0.1:${this._port} ...`);
 
         const proc = cp.spawn(
             python,
-            ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(this.port)],
+            ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(this._port)],
             { cwd: backendPath, env, detached: false },
         );
 
@@ -183,36 +254,108 @@ export class CoreProcessManager {
         });
 
         this._proc = proc;
-        this._state = 'running';
+        this._adoptedPid = null;   // this one is ours to reap
+        await this._waitForReady(proc);
     }
 
-    async stop(): Promise<void> {
-        if (!this._proc) { this._state = 'stopped'; return; }
-        const proc = this._proc;
-        this._proc = null;
-        this._state = 'stopped';  // prevents close handler from auto-retrying
-        return new Promise<void>((resolve) => {
-            proc.once('close', () => resolve());
-            if (process.platform === 'win32') {
-                proc.kill();
-            } else {
-                proc.kill('SIGTERM');
-                setTimeout(() => {
-                    try { proc.kill('SIGKILL'); } catch { /* already dead */ }
-                }, 3000);
-            }
+    /**
+     * Poll until the spawned Core answers, then settle the state.
+     *
+     * A spawn that returns is not a Core that serves: uvicorn can still fail to
+     * bind, or take far longer than the spawn call. Claiming 'running' before
+     * the port answers is what let a dead backend look healthy.
+     */
+    private async _waitForReady(proc: cp.ChildProcess): Promise<void> {
+        const api = APIClient.getInstance();
+        const deadline = Date.now() + CORE_READY_TIMEOUT_MS;
+        let healthy = false;
+
+        while (Date.now() < deadline) {
+            if (this._proc !== proc) { break; }   // superseded by a retry or a stop
+            if (await api.checkHealth()) { healthy = true; break; }
+            await new Promise((resolve) => setTimeout(resolve, CORE_READY_POLL_INTERVAL_MS));
+        }
+
+        const outcome = resolveReadyOutcome({
+            procIsCurrent: this._proc === proc,
+            healthy,
+            state: this._state,
         });
+        if (outcome === null) { return; }
+        this._state = outcome;
+        if (outcome === 'running') {
+            this._crashRetries = 0;
+            this._outputChannel.appendLine(`[AILIENANT] Core ready on 127.0.0.1:${this._port}.`);
+        } else {
+            this._outputChannel.appendLine(
+                `[AILIENANT] Core did not answer on 127.0.0.1:${this._port} within ${CORE_READY_TIMEOUT_MS}ms.`,
+            );
+        }
     }
 
+    /**
+     * Stop the Core, whether spawned here or adopted.
+     *
+     * Targets the whole process tree, since `python -m uvicorn` forks a worker
+     * that owns the listening socket. The wait for exit is bounded so this can
+     * never be what wedges a restart — an unbounded wait here made the restart
+     * path a silent no-op.
+     */
+    async stop(): Promise<void> {
+        const proc = this._proc;
+        const adoptedPid = this._adoptedPid;
+        this._proc = null;
+        this._adoptedPid = null;
+        this._state = 'stopped';   // set before any await: stops the close handler retrying
+        const log = (line: string): void => this._outputChannel.appendLine(line);
+        try {
+            if (adoptedPid !== null) {
+                await killProcessTree(adoptedPid, log);
+                return;
+            }
+            if (!proc) { return; }
+            const closed = new Promise<void>((resolve) => proc.once('close', () => resolve()));
+            if (proc.pid !== undefined) {
+                await killProcessTree(proc.pid, log);
+            } else {
+                proc.kill();
+            }
+            await withTimeout(closed, CORE_STOP_TIMEOUT_MS, () => {
+                log(`[AILIENANT] Core did not report exit within ${CORE_STOP_TIMEOUT_MS}ms; continuing.`);
+            });
+        } finally {
+            this._state = 'stopped';
+        }
+    }
+
+    /**
+     * Stop and start again. Concurrent calls share one in-flight restart, so
+     * repeated clicks cannot interleave two teardowns.
+     */
     async restart(): Promise<void> {
-        this._crashRetries = 0;
-        await this.stop();
-        await this.start();
+        if (this._restartInFlight) { return this._restartInFlight; }
+        this._restartInFlight = (async () => {
+            try {
+                this._crashRetries = 0;
+                await this.stop();
+                // Re-derive coordinates: we just killed whoever owned the old
+                // port, and a just-freed port can linger in TIME_WAIT.
+                this._port = await findFreePort();
+                this._token = generateAuthToken();
+                this._onCoordinates(this._port, this._token);
+                await this.start();
+            } finally {
+                this._restartInFlight = null;
+            }
+        })();
+        return this._restartInFlight;
     }
 
     dispose(): void {
-        void this.stop();
-        this._outputChannel.dispose();
+        // VS Code offers no awaitable shutdown hook, so this stays best-effort —
+        // a hard-killed host runs no cleanup at all. Adoption is what absorbs a
+        // Core that outlives us either way.
+        void this.stop().finally(() => this._outputChannel.dispose());
     }
 }
 
@@ -339,8 +482,13 @@ export class WorkspacePanelManager {
     // broadcasts `server_session_branched`. Implementation lives in
     // extension.ts so workspace_panel.ts stays decoupled from the sidebar.
     private _onSessionBranched: ((session: Session) => void) | undefined;
-    // Phase 7.9.A.5.1 — managed child process; set from activate() via setCoreManager().
+    // Managed child process; set from activate() via setCoreManager().
     private _coreManager: CoreProcessManager | null = null;
+    // Backstop budget for a Core that is still coming up when a panel opens.
+    private static readonly ENSURE_BACKEND_POLL_ATTEMPTS = 30;
+    private static readonly ENSURE_BACKEND_POLL_INTERVAL_MS = 1000;
+    // Guards against one warning per opened panel when the Core is unreachable.
+    private _backendFailureNotified = false;
     // Phase 7.11.4 — host-side workspace path trie for @mention autocomplete.
     // Lazily bootstrapped on first WORKSPACE_PATHS_QUERY / SUBMIT_TASK to
     // avoid a startup-time `findFiles` on workspaces the user never queries.
@@ -541,25 +689,53 @@ export class WorkspacePanelManager {
     }
 
     /**
-     * Phase 7.9.A.5.1 — Health-aware activation, run once per session open.
-     * If the Core is already healthy, connect immediately. Otherwise poll while
-     * CoreProcessManager starts it (~30 s budget). Falls back gracefully if no
-     * manager is configured (e.g. manual external backend).
+     * Health-aware activation, run once per session open. If the Core is already
+     * healthy, connect immediately; otherwise poll while it comes up. A backstop
+     * behind CoreProcessManager's own readiness gate, and the last place that can
+     * tell the user the backend never arrived.
      */
     private async _ensureBackend(sessionId: string): Promise<void> {
         const api = APIClient.getInstance();
         if (await api.checkHealth()) {
+            this._backendFailureNotified = false;
             SessionManager.forSession(sessionId).ensureConnected();
             return;
         }
         if (!this._coreManager) { return; }
-        for (let i = 0; i < 30; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+        for (let i = 0; i < WorkspacePanelManager.ENSURE_BACKEND_POLL_ATTEMPTS; i++) {
+            await new Promise((resolve) =>
+                setTimeout(resolve, WorkspacePanelManager.ENSURE_BACKEND_POLL_INTERVAL_MS));
             if (await api.checkHealth()) {
+                this._backendFailureNotified = false;
                 SessionManager.forSession(sessionId).ensureConnected();
                 return;
             }
         }
+        this._reportBackendUnreachable(sessionId);
+    }
+
+    /**
+     * Surface an exhausted wait. Silence here left the status pill stale with no
+     * way for the user to learn the backend never came up, or to act on it.
+     * De-duplicated so opening several panels against a dead Core warns once.
+     */
+    private _reportBackendUnreachable(sessionId: string): void {
+        this._panels.get(sessionId)?.webview.postMessage({
+            type: 'WS_STATUS',
+            payload: 'disconnected' satisfies WsConnectionStatus,
+        });
+        if (this._backendFailureNotified) { return; }
+        this._backendFailureNotified = true;
+        const port = this._coreManager?.port;
+        void vscode.window.showErrorMessage(
+            `AILIENANT: Core did not become reachable on 127.0.0.1:${port ?? '?'}.`,
+            'Show Output', 'Restart Core',
+        ).then((choice) => {
+            if (choice === 'Show Output') { this._coreManager?.showOutput(); }
+            if (choice === 'Restart Core') {
+                void vscode.commands.executeCommand('ailienant.restartCore');
+            }
+        });
     }
 
     private _createPanel(session: Session): void {
@@ -1226,9 +1402,10 @@ export class WorkspacePanelManager {
                     break;
                 }
                 case 'RESTART_BACKEND': {
-                    if (this._coreManager) {
-                        void this._coreManager.restart();
-                    }
+                    // Routed through the command so the webview button and the
+                    // palette entry share one path, progress reporting included.
+                    this._backendFailureNotified = false;
+                    void vscode.commands.executeCommand('ailienant.restartCore');
                     break;
                 }
                 case 'OPEN_DASHBOARD': {

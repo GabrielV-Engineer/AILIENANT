@@ -88,6 +88,11 @@
         "command": "ailienant.initProject",
         "title": "Analyze Project & Draft AILIENANT.md",
         "category": "AILIENANT"
+      },
+      {
+        "command": "ailienant.restartCore",
+        "title": "Restart Core",
+        "category": "AILIENANT"
       }
     ],
     "menus": {
@@ -125,15 +130,10 @@
     "configuration": {
       "title": "AILIENANT",
       "properties": {
-        "ailienant.coreStartCommand": {
-          "type": "string",
-          "default": "",
-          "description": "Shell command to start the AILIENANT core backend. Example: 'cd ailienant-core && .venv/Scripts/python -m uvicorn main:app --reload'. Leave empty to disable the Start Core button."
-        },
         "ailienant.autoStartCore": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically start the AILIENANT Core backend when a session opens if it is not already reachable. The manual 'Start Core' button still works when this is disabled."
+          "description": "Automatically start the AILIENANT Core backend when it is not already reachable. A Core that is already running is adopted regardless of this setting; the 'AILIENANT: Restart Core' command still works when it is disabled."
         },
         "ailienant.docsUrl": {
           "type": "string",

@@ -834,6 +834,15 @@
 
 ---
 
+### Division 8.17 — Core Host Lifecycle (corrective, extension-only) ✅
+
+> Corrective slice opened against a live failure: the extension stopped reaching a backend that was demonstrably healthy (HTTP 200 + WebSocket `101` on its published port) while reporting "disconnected", and the webview's Restart Core button was a silent no-op. Scoped strictly to `ailienant-extension`; no Python is touched.
+
+- [x] **8.17.0 — Adopt a running Core; make stop/restart unable to hang or fail silently.**
+  Root cause: `activate()` mints a fresh random port and token on every activation and never asks whether a Core is already serving, so a backend surviving from a previous host keeps its port while the new one is addressed elsewhere. New `providers/coreDiscovery.ts` (vscode-free, unit-testable) reads `~/.ailienant/run.json`, probes liveness over HTTP, and gates adoption on a token being present — honouring `host_discovery.py`'s own documented contract that the file is a hint requiring a liveness probe, the same discipline the gateway already applies. `CoreProcessManager` gains adoption, mutable coordinates published through an injected callback, a readiness probe before claiming `running` (guarded by process identity so a crash-retry cannot be overwritten by a superseded probe), a process-tree kill with a bounded wait in `stop()`, and a coalesced `restart()`. `_ensureBackend`'s exhausted budget now surfaces an actionable error instead of returning silently. New `ailienant.restartCore` command makes recovery reachable from the Command Palette, not only from a webview that may itself be unreachable. Dead `ailienant.coreStartCommand` setting removed (never read; its description promised a nonexistent button). **DoD:** `npm run compile` 0 · `npm run lint` 0 errors · `npm test` green.
+
+---
+
 ### Division 8.18 — CoderAgent Tool Activation ✅
 
 > ~53 tool classes exist in `tools/*.py`; ~35 have zero production callers — and the dead ones are almost entirely the CoderAgent's (`coder_tools.py`, `agent_tools.py`, `mutation_tools.py`, `patch_tool.py`, `execution_tools.py`, `control_tools.py`, `orchestrator_tools.py`, `universal_tools.py`, `meta_tools.py`, `gateway_tools.py`, 5/8 of `perception_tools.py`). The live ~15 are the Analyst's and Researcher's — each already runs a working `core/tool_dispatch.py::ToolDispatcher` loop (`agents/analyst.py:290`, `agents/researcher.py:106`, `brain/nodes/subagent_worker_node.py:141`), independently, with no central hub — `agents/orchestrator.py` has no tool code and is not even wired into the production graph (`brain/engine.py::alienant_app`; it exists only in the untested-in-production `brain/swarms.py::build_full_swarm`). **So this is not a system-wide outage — it is one agent, the Coder, with zero tools.**

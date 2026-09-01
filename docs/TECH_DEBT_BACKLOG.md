@@ -93,6 +93,11 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-233 | `_inject_reasoning_scaffold` imposes one fixed 4-beat template on every free-form call, so all reasoning across the app shares a shape | LOW | Output quality / uniformity | future gateway prompt slice | Floating |
 | DEBT-234 | Injected `cell_reasoner`/`dispatch_*` seams declare no model, so a non-default injection is budgeted against the default tier's window | LOW | Architecture | unscheduled | Floating |
 | DEBT-235 | Natt (Analyst) has no access to session activity — sees only the frontend-attached active file, never Coder diffs, Companion reasoning, chat messages, or WBS steps from the current session | MEDIUM | Capability gap | future Natt/session-context division | Floating |
+| DEBT-236 | `killProcessTree` is asserted only at the argv level — no integration test kills a real launcher+worker tree | LOW | Test coverage | future host-lifecycle test slice | Floating |
+| DEBT-237 | `CoreProcessManager.dispose()` stays best-effort — VS Code exposes no awaitable shutdown hook, so a hard-killed host runs no cleanup; adoption absorbs the residue | LOW | Declared tradeoff | backend parent-watchdog slice, if ever needed | Floating |
+| DEBT-238 | Two independent readiness budgets poll `checkHealth()` over overlapping windows (`_waitForReady` 45s, `_ensureBackend` 30s) | LOW | Architecture | future host-lifecycle consolidation | Floating |
+| DEBT-239 | `~/.ailienant/run.json` is a single global file but ports are per-window — two VS Code windows on different repos share it, last writer wins; empirically demonstrated | MEDIUM | Architecture | workspace-scoped discovery slice | Floating |
+| DEBT-240 | A 4001 auth rejection has no automatic recovery — the user must invoke Restart Core from the toast | LOW | UX / robustness | after DEBT-239 settles ownership | Floating |
 
 ---
 
@@ -131,6 +136,20 @@ weighted 36 · SLOC 41,337 (`radon raw -s`, same exclusions) → **Debt Ratio �
 Essentially flat against 8.22's 0.85: this division removed the analyst's own fixed reasoning
 template and logged the one remaining below it, so the ratio moved by a single LOW item on a
 slightly larger codebase.
+
+**Recomputed (2026-09-01, host-lifecycle fix):** DEBT-236–240 (1 MEDIUM, 4 LOW) move the dashboard
+to 0 HIGH, 11 MEDIUM, 23 LOW → weighted 45 · SLOC 41,410 (`radon raw -s`, same exclusions) →
+**Debt Ratio ≈ 1.09 / KLOC**.
+
+**This number is misleading and the denominator is why.** The ratio divides by `ailienant-core`
+SLOC only, but all five new entries are `ailienant-extension` debt — the fix touched no Python at
+all. So the numerator grew while the denominator, by construction, could not. The apparent 0.87 →
+1.09 jump measures a units mismatch, not a decline in backend health; the backend's own debt is
+unchanged. This is the second time this metric has needed a caveat rather than a reading (8.22
+noted it cannot fall when an audit converts unknown defects into tracked ones), and the two
+caveats now point at the same fix: either scope the ratio per-zone, or wire a TypeScript SLOC pass
+so `ailienant-extension` enters the denominator it already contributes entries to. Until then,
+treat cross-zone comparisons of this number as invalid.
 
 ---
 
@@ -1829,6 +1848,58 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Why it was left:** 8.20 made the names derivable (`_CellToolArgs.TOOL_NAME`), which is the prerequisite; wiring native tool-calling is a separate decision about whether the cell should stop parsing JSON out of text at all.
 - **What it would take:** either delete the unused seam, or convert `CELL_TOOLS` into properly-named tool objects and switch `_default_reasoner` to the native path behind a capability check.
 - **Phase:** unscheduled.
+
+---
+
+### DEBT-239 [MEDIUM · Floating] — `run.json` is one global file but Core ports are per-window; last writer wins
+
+- **Date:** 2026-09-01
+- **Reproduce:** start any backend (`AILIENANT_API_PORT=X .\venv\Scripts\python -m uvicorn main:app --port X`) and read `~/.ailienant/run.json` — it now advertises X regardless of which window or workspace owns that Core.
+- **Files:** `ailienant-core/core/config/host_discovery.py:39` (`RUN_STATE_PATH`), `ailienant-core/main.py:149-170` (`_publish_host_discovery`), `ailienant-extension/src/providers/coreDiscovery.ts` (the adoption reader).
+- **Gap:** the discovery file is keyed by nothing but the user's home directory, so two VS Code windows on two different repositories write and read the same coordinates. The second window adopts the first window's Core. That may even be desirable (one Core per machine) but it is undesigned: there is no workspace identity in the file, and whichever backend started last wins.
+- **Empirically demonstrated, not theoretical:** during the host-lifecycle fix's own verification, throwaway test backends overwrote the real file with `{"port": 61999, "token": "x"}`. The liveness probe is what contains the blast radius — `shouldAdopt` refuses coordinates whose port does not answer — but containment is not identity.
+- **What it would take:** add a `workspace_root` field to the run-state payload (additive, §10-safe: older readers ignore it) and have the adopter compare it against its own workspace folder before adopting; or move to a per-workspace discovery path. Decide explicitly whether one-Core-per-machine or one-Core-per-workspace is the intended model — the answer also settles DEBT-240.
+- **Phase:** unscheduled — workspace-scoped discovery slice.
+
+---
+
+### DEBT-236 [LOW · Floating] — `killProcessTree` has no integration test against a real process tree
+
+- **Date:** 2026-09-01
+- **Files:** `ailienant-extension/src/providers/coreDiscovery.ts` (`killProcessTree`, `buildKillCommand`), `ailienant-extension/src/test/coreDiscovery.test.ts`.
+- **Gap:** only the argv construction is asserted (`buildKillCommand`), plus that killing a nonexistent pid resolves without throwing. Nothing spawns a real launcher+worker pair and proves the whole tree is reaped.
+- **Why deferred:** such a test must spawn a process tree, kill it, and poll for reaping — platform-forked (taskkill vs. signals), timing-sensitive, and a likely CI flake source, which §16.4's zero-flake policy makes expensive. Covered by the manual verification protocol instead.
+- **Phase:** unscheduled — future host-lifecycle test slice.
+
+---
+
+### DEBT-237 [LOW · Floating] — `CoreProcessManager.dispose()` is best-effort; a hard-killed host runs no cleanup at all
+
+- **Date:** 2026-09-01
+- **Files:** `ailienant-extension/src/providers/workspace_panel.ts` (`CoreProcessManager.dispose`), `ailienant-extension/src/extension.ts` (`deactivate`, `context.subscriptions`).
+- **Gap:** VS Code's `dispose()` is synchronous and `deactivate()` exposes no awaitable shutdown hook, so the teardown stays fire-and-forget. A hard-killed extension host runs no cleanup whatsoever, and a Core can outlive it.
+- **Declared tradeoff:** accepted rather than fixed, because adoption absorbs the residue — a surviving Core is discovered and reused on the next activation instead of being duplicated. The belt-and-braces alternative is a backend-side watchdog in `main.py`'s lifespan that self-terminates when its parent pid disappears; that is a backend change with its own failure modes (a legitimately re-parented Core would kill itself) and was not warranted for a case adoption already handles.
+- **Phase:** unscheduled — revisit only if orphaned Cores prove to cause harm that adoption does not absorb.
+
+---
+
+### DEBT-238 [LOW · Floating] — Two independent readiness budgets poll the same health endpoint
+
+- **Date:** 2026-09-01
+- **Files:** `ailienant-extension/src/providers/workspace_panel.ts` (`CoreProcessManager._waitForReady`, `WorkspacePanelManager._ensureBackend`), `ailienant-extension/src/providers/coreDiscovery.ts` (`CORE_READY_TIMEOUT_MS`).
+- **Gap:** `_waitForReady` (45s, owned by the process manager) and `_ensureBackend` (30s, owned by panel-open) both poll `APIClient.checkHealth()` over overlapping windows. After the readiness gate landed, the second is a backstop rather than the primary mechanism, so the duplication is redundant rather than wrong.
+- **What it would take:** have the manager expose `whenReady(): Promise<boolean>` and let `_ensureBackend` await that instead of running its own loop. Deferred because it touches the panel-open path, which has its own rehydration ordering concerns, and the current duplication is harmless.
+- **Phase:** unscheduled — host-lifecycle consolidation.
+
+---
+
+### DEBT-240 [LOW · Floating] — A 4001 auth rejection has no automatic recovery
+
+- **Date:** 2026-09-01
+- **Files:** `ailienant-extension/src/api/ws_client.ts` (the `code === 4001` branch), `ailienant-core/api/websocket_manager.py:253-283` (`connect`, the token comparison).
+- **Gap:** close code 4001 means the server rejected our token; the client deliberately stops retrying (retrying the same wrong token would loop). The user now gets a toast with a **Restart Core** action, but recovery is still manual.
+- **Why not automatic:** with adoption in place, a 4001 specifically means "we are pointed at a Core that is not ours," which auto-restarting would fix — but that Core may legitimately belong to another VS Code window, and a kill loop between two windows fighting over one backend is worse than a toast. Blocked on DEBT-239 settling whether a Core is owned per-machine or per-workspace.
+- **Phase:** unscheduled — after DEBT-239.
 
 ---
 

@@ -72,12 +72,21 @@ export class WSClient {
     }
 
     /**
-     * Phase 7.9.A.5.1 — called from activate() once the CoreProcessManager has a port/token.
-     * All subsequent connections will target the new URL and send the auth handshake.
+     * Point the client at a Core's coordinates. All subsequent connections
+     * target this URL and send the auth handshake with this token.
+     *
+     * Re-pointing tears down any live socket first: adoption and restart both
+     * move the target mid-session, and a socket left running against the old
+     * coordinates would keep retrying a backend that is no longer ours.
      */
     public configure(wsUrl: string, token: string): void {
+        const urlChanged = this._wsUrl !== wsUrl;
         this._wsUrl = wsUrl;
         this._token = token;
+        if (urlChanged && this.ws) {
+            this.disconnect();
+            this.reconnectAttempts = 0;
+        }
     }
 
     /**
@@ -184,7 +193,16 @@ export class WSClient {
                 // Do not retry: the token is wrong for this server instance.
                 if (code === 4001) {
                     this._emitStatus('disconnected');
-                    vscode.window.showErrorMessage('AILIENANT: WebSocket auth rejected (token mismatch). Restart the extension.');
+                    // A token mismatch means we are pointed at a Core that is not
+                    // ours — restarting it re-syncs both sides.
+                    void vscode.window.showErrorMessage(
+                        'AILIENANT: WebSocket auth rejected (token mismatch).',
+                        'Restart Core',
+                    ).then((choice) => {
+                        if (choice === 'Restart Core') {
+                            void vscode.commands.executeCommand('ailienant.restartCore');
+                        }
+                    });
                     return;
                 }
                 this._emitStatus('reconnecting');

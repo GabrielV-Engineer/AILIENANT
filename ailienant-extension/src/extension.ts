@@ -42,14 +42,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     registerProjectInit(context);
 
-    // Phase 7.9.A.5.1 — dynamic port selection + ephemeral auth token.
-    // findFreePort() is OS-assigned (listen(0)) — no TOCTOU race.
-    const port  = await findFreePort();
-    const token = generateAuthToken();
-    APIClient.getInstance().configure(`http://127.0.0.1:${port}/api/v1`, token);
-    WSClient.getInstance().configure(`ws://127.0.0.1:${port}/api/v1/ws`, token);
-
-    const coreManager = new CoreProcessManager(port, token, context.extensionUri.fsPath);
+    // Dynamic port selection + ephemeral auth token. findFreePort() is
+    // OS-assigned (listen(0)) — no TOCTOU race.
+    //
+    // The manager owns the live coordinates and publishes them through this
+    // callback, because they are not final at construction: an already-running
+    // Core is adopted at its own port and token, and a restart re-derives both.
+    const coreManager = new CoreProcessManager(
+        await findFreePort(),
+        generateAuthToken(),
+        context.extensionUri.fsPath,
+        (corePort, coreToken) => {
+            APIClient.getInstance().configure(`http://127.0.0.1:${corePort}/api/v1`, coreToken);
+            WSClient.getInstance().configure(`ws://127.0.0.1:${corePort}/api/v1/ws`, coreToken);
+        },
+    );
+    coreManager.publishCoordinates();
 
     // Devcontainer trusted-tier lifecycle owner. Dormant here — provisioning is
     // driven lazily by the backend host bridge; instantiated so it can be disposed
@@ -65,10 +73,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspaceManager = new WorkspacePanelManager(context.extensionUri, context.workspaceState);
     workspaceManager.setCoreManager(coreManager);
 
-    // Auto-start the Core backend when enabled (default: true).
+    // Bring up the Core. `autoStartCore` governs spawning, not discovery: an
+    // already-running Core is adopted either way, so a backend the user started
+    // by hand stays reachable without flipping the setting.
+    const reportCoreFailure = (err: unknown): void => {
+        logger.error('[core] startup failed', err);
+        void vscode.window.showErrorMessage(
+            `AILIENANT: Core failed to start — ${err instanceof Error ? err.message : String(err)}`,
+            'Show Output', 'Restart Core',
+        ).then((choice) => {
+            if (choice === 'Show Output') { coreManager.showOutput(); }
+            if (choice === 'Restart Core') {
+                void vscode.commands.executeCommand('ailienant.restartCore');
+            }
+        });
+    };
     if (vscode.workspace.getConfiguration('ailienant').get<boolean>('autoStartCore', true)) {
-        void coreManager.start();
+        void coreManager.adoptOrStart().catch(reportCoreFailure);
+    } else {
+        void coreManager.adoptIfRunning().catch(reportCoreFailure);
     }
+
+    const restartCoreCmd = vscode.commands.registerCommand(
+        'ailienant.restartCore',
+        async () => {
+            await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: 'AILIENANT: restarting Core…' },
+                () => coreManager.restart(),
+            );
+            if (coreManager.getState() === 'running') {
+                void vscode.window.showInformationMessage(
+                    `AILIENANT: Core running on 127.0.0.1:${coreManager.port}.`,
+                );
+                return;
+            }
+            void vscode.window.showErrorMessage('AILIENANT: Core failed to restart.', 'Show Output')
+                .then((choice) => { if (choice === 'Show Output') { coreManager.showOutput(); } });
+        },
+    );
 
     // ── Session browser sidebar provider ─────────────────────────────
     const onOpenSession = (s: Session): void => workspaceManager.openSession(s);
@@ -277,10 +319,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         toggleIncognitoCmd,
         triggerDreamingCmd,
         scaffoldDevcontainerCmd,
+        restartCoreCmd,
         ideSync,
         incognitoBar,
         { dispose: () => InlineMutationManager.instance.dispose() },
         { dispose: () => workspaceManager.dispose() },
+        // Explicit rather than relying on workspaceManager's disposal order —
+        // reaping the Core process must not depend on it.
+        { dispose: () => coreManager.dispose() },
         { dispose: () => disposeDevcontainerProvisioner() },
         { dispose: () => disposeDevcontainerSessionHandler() },
     );

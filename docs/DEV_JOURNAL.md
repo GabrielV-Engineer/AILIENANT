@@ -13,6 +13,16 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.17.0: Core Host Lifecycle — Adopt a Running Core, Unhang Restart — 2026-09-01
+**Status:** COMPLETE | **Gates:** tsc 0 · npm lint 0 errors/23 pre-existing advisory warnings · npm test 344 passed · npm compile 0
+- Shipped: the extension stopped duplicating a Core it should have joined. `activate()` minted a fresh port and token every time and never asked whether one was already serving, so a backend surviving a previous host kept its port while the new one was addressed elsewhere — measured live at HTTP 200 + WS `101` on the published port while the UI read "disconnected". It now reads `~/.ailienant/run.json`, probes liveness, and adopts; `stop()` kills the process tree under a bounded wait, `start()` proves readiness before claiming it, `_ensureBackend` reports an exhausted budget instead of returning silently, and `ailienant.restartCore` reaches the Command Palette.
+- Key decision: adopt rather than evict. `host_discovery.py` already documents the file as "a hint, not a truth" requiring a liveness probe, and the gateway already reads it that way — a second symmetric reader follows an existing contract instead of inventing one, and it is the only behaviour that is correct when the survivor is a second window or a hand-started `uvicorn` rather than an orphan.
+- Key decision: the first diagnosis was wrong and the fix outlived it. "Windows does not propagate a kill to the tree" was refuted by three reproductions (force-kill of the launcher, fire-and-forget kill with immediate parent exit, external hard-kill of the parent) — none orphaned the worker; the launcher/worker split is simply how healthy `python -m uvicorn` looks. Port contention, not process orphaning, was the mechanism; the tree kill stays as defence in depth rather than the load-bearing repair.
+- Deferred: DEBT-236/237/238/240 — kill-tree integration test, best-effort `dispose()`, duplicated readiness budgets, manual-only 4001 recovery.
+- Deferred: DEBT-239 — one global `run.json` against per-window ports; demonstrated when this fix's own verification backends overwrote the user's file, contained only because adoption probes liveness first.
+
+---
+
 ## 8.23: Ideation Fidelity — Non-Repetitive Grill, Amplifying Brief — 2026-09-01
 **Status:** COMPLETE | **Gates:** ruff 0 · mypy 0/486 · pyright 0 · pytest 3428 passed/2 skipped · npm compile 0 · npm lint 0 · npm test 321 passed
 - Shipped: the interview stopped compressing what it exists to add. Its reasoning pass received neither the dialogue nor the operator's answers, so at temperature 0.0 every round re-derived the last one from inputs that had not moved; it now carries the previous round's reasoning forward (last entry only) and samples at 0.6, while the strict-JSON batch stays deterministic. The distillation, instructed to be "concise" with intent capped at "one tight paragraph", overwrote `user_input` and left the operator's own wording unreachable — it now preserves stated figures/APIs/paths verbatim, composes THE REQUEST and WHAT THE INTERVIEW ESTABLISHED as separately-authoritative blocks, and finally gets a real output budget.

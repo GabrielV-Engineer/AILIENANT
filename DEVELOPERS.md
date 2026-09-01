@@ -441,7 +441,8 @@ Proyect_Ailienant/
 │   │   │                        #     devcontainerExecHandler.ts (host-side bridge handler — provision/exec, streams back),
 │   │   │                        #     devcontainerSessionHandler.ts (§43 interactive-session bridge — stateful, owns live child processes),
 │   │   │                        #     devcontainerScaffold.ts (idempotent .devcontainer/devcontainer.json starter),
-│   │   │                        #     docsCatalog.ts (vscode-free Help-documents resolver over dist/docs/)
+│   │   │                        #     docsCatalog.ts (vscode-free Help-documents resolver over dist/docs/),
+│   │   │                        #     coreDiscovery.ts (vscode-free run-state read/probe, adoption policy, process-tree kill)
 │   │   └── test/                #     vscode-test mocha suite (webview components + dispatch logic)
 │   ├── e2e/                     #   Playwright suite for the browser-reachable dashboard SPA (Phase 11.9);
 │   │                            #     run-backend.mjs boots a hermetically-seeded ailienant-core, fixtures.ts
