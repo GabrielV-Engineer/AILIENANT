@@ -106,6 +106,12 @@ Source: `agents/contract_guard.py`.
 - Input: `user_input`, `researcher_skeleton`, `planner_mode_active`, `hitl_response`
 - Output: `MissionSpecification` JSON → `mission_spec` state channel
 
+> **After an ideation turn, `user_input` IS the brief.** `synthesis_node` overwrites the channel
+> with `_compose_planner_brief`'s output before routing here (§3.4), so the planner's "user
+> requirement" is the distilled document, not what the operator typed. The operator's own wording
+> survives separately on `original_user_request` and is reproduced verbatim inside the brief's
+> authoritative block — the planner reads it there, never from `messages`, which it does not consume.
+
 ---
 
 ### 3.3 CoderAgent (8 Dynamic Roles)
@@ -145,6 +151,35 @@ The AnalystAgent operates on a **separate WebSocket channel** (`client_analyst_q
 > "You are running a Socratic 'Grill Me' planning session. Ask EXACTLY ONE focused question this turn to expose hidden constraints or risks in the user's plan. Always end with a concrete recommended default answer the user can accept if they have no strong preference."
 
 Used when the main graph enters `collaborative` planning strategy and `planner_mode_active = True`.
+
+**Reasoning pass (`_stream_grill_reasoning`, `agents/analyst.py`):** a separate free-form
+completion before each question batch — the batch call is a strict `json_object` contract, which a
+reasoning preamble corrupts. It receives the PREVIOUS round's reasoning, the operator's answers so
+far, and the axes named earlier, with an instruction that is negative rather than prescriptive
+("do not restate; take it further"). No fixed set of angles is imposed: a frontend change and a
+schema migration do not turn on the same dimensions, so the model names its own and closes with an
+`AXES: a, b, c` line (`AXES: none` once nothing is open). Runs at `_GRILL_REASONING_TEMPERATURE`
+(0.6) while the batch stays near-deterministic — exploratory prose wants variance, a schema does
+not. Only the LAST log entry is carried forward: an accumulating prompt would shrink the output
+budget derived from the same window.
+
+**`_DISTILL_SYSTEM_PROMPT` — closing the dialogue into the planner's brief (`brain/ideation.py`):**
+the highest-leverage prompt on the planning path, since its output REPLACES `user_input` (§3.2).
+Framed as preservation, not summary — the interview EARNED context (answers plus the analyst's own
+investigation), so the brief hands over everything of substance rather than condensing it. Returns
+`verbatim_requirements` · `intent` · `constraints` · `scope_hints` · `findings` ·
+`open_questions` · `ubiquitous_language`. Its fidelity rules explicitly outrank brevity: every
+figure, name, API, path and example the operator stated is reproduced exactly, and the brief ADDS
+to what they said rather than REPLACING it with something shorter.
+
+`_compose_planner_brief` renders that into two blocks with a visible boundary — **THE REQUEST**
+(the verbatim `original_user_request` plus stated specifics; authoritative, not to be
+reinterpreted) and **WHAT THE INTERVIEW ESTABLISHED** (everything the dialogue added). The split is
+what stops the brief from restating the request in weaker words. The distillation's user payload
+also carries the grill's own per-round reasoning in a separately-labelled section, so the model can
+tell operator-stated from analyst-deduced. Output budget comes from `_resolve_distill_budget`
+(`resolve_real_window` + `resolve_output_budget`, ceiling derived from the planner's own); an
+impossible budget degrades rather than refusing — the handoff must never dead-end.
 
 **`_INTENT_SYSTEM_PROMPT` — Pre-Dream Reflection:**
 > "You are an AnalystAgent performing Pre-Dream Reflection. Based on the user's recent message and workspace context, produce ONE sentence (≤30 words) summarising the user's primary coding intent."

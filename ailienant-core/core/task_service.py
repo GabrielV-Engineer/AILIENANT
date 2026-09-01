@@ -725,6 +725,10 @@ class TaskService:
         initial_state: dict[str, Any] = {
             "task_id": session_id,
             "user_input": payload.task_prompt,
+            # Same text, kept under a key nothing overwrites. synthesis_node
+            # replaces user_input with the distilled brief, so this is the only
+            # copy of the operator's own wording that survives to the planner.
+            "original_user_request": payload.task_prompt,
             "project_id": payload.project_id,
             "explicit_mentions": payload.explicit_mentions,
             "attachments": payload.attachments,

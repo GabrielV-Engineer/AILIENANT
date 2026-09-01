@@ -476,6 +476,17 @@ class AIlienantGraphState(TypedDict):
     # --- Mission Identity ---
     task_id: str
     user_input: str
+    # original_user_request: what the operator actually typed, preserved verbatim
+    #   for the life of the turn. `user_input` cannot serve this role: synthesis_node
+    #   OVERWRITES it with the distilled brief, after which the operator's own
+    #   wording exists nowhere the planner can reach (it reads user_input, never
+    #   messages). Held outside `messages` deliberately — that list is what
+    #   StateSummarizer compacts, so anything living there can be summarised away,
+    #   while a separate channel is unreachable to it by construction.
+    #   Not a competing source of truth: this is the primary requirement, the brief
+    #   is the derived layer, and the composed brief marks the boundary between them.
+    #   Written once at turn start, never mutated. Absent on a pre-existing checkpoint.
+    original_user_request: str
     # Wall-clock epoch (time.time()) set once by core/task_service.py's
     # session-start resolver on the first turn of a session, then carried
     # forward unchanged on every later turn while L1 stays warm. No graph
@@ -535,6 +546,24 @@ class AIlienantGraphState(TypedDict):
     #   one-question-per-top-level-turn design implicitly did via separate invocations.
     #   Scalar overwrite; used as the _GRILL_MAX_ROUNDS circuit breaker.
     grill_round_count: int
+    # grill_reasoning_log: one entry per grill round — the analyst's own free-form
+    #   reasoning for that round, previously streamed to the Thought Box and then
+    #   discarded. Kept because three readers need it: the next round (which without
+    #   it re-derives the same conclusions from the same inputs, which is why
+    #   consecutive rounds used to read almost identically), the distillation (whose
+    #   transcript otherwise contains only the Q&A, never where the analyst looked or
+    #   what it ruled out), and the coverage stop. Append-only; the NEXT-round reader
+    #   takes only the last entry, never the whole list — a per-round-growing prompt
+    #   shrinks the output budget derived from the same window.
+    grill_reasoning_log: Annotated[List[str], operator.add]
+    # grill_coverage_axes: the dimensions the model itself judged this task to turn
+    #   on, named by it in the reasoning pass rather than prescribed by a fixed list —
+    #   a frontend task and a schema migration do not share a set of relevant angles,
+    #   and imposing one makes every interview the same interview. Read by
+    #   route_after_analyst as a stop criterion; empty (a model that ignored the
+    #   format, a pass cut short) degrades to the round counter, i.e. prior behaviour.
+    #   Scalar overwrite — each round restates the full set.
+    grill_coverage_axes: List[str]
     # pending_grill_batch: the current round's question batch (already-serialized
     #   dicts, questions_to_pending_dicts' output), committed to state by
     #   analyst_grill's generate phase BEFORE the self-loop revisits the node for

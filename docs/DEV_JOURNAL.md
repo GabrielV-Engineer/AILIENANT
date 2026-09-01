@@ -13,6 +13,16 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.23: Ideation Fidelity — Non-Repetitive Grill, Amplifying Brief — 2026-09-01
+**Status:** COMPLETE | **Gates:** ruff 0 · mypy 0/486 · pyright 0 · pytest 3428 passed/2 skipped · npm compile 0 · npm lint 0 · npm test 321 passed
+- Shipped: the interview stopped compressing what it exists to add. Its reasoning pass received neither the dialogue nor the operator's answers, so at temperature 0.0 every round re-derived the last one from inputs that had not moved; it now carries the previous round's reasoning forward (last entry only) and samples at 0.6, while the strict-JSON batch stays deterministic. The distillation, instructed to be "concise" with intent capped at "one tight paragraph", overwrote `user_input` and left the operator's own wording unreachable — it now preserves stated figures/APIs/paths verbatim, composes THE REQUEST and WHAT THE INTERVIEW ESTABLISHED as separately-authoritative blocks, and finally gets a real output budget.
+- Key decision: rejected fixed reasoning "lenses" (round 1 ambiguity, round 2 risk…). Swapping one rigid template for another presumes every task has the same dimensions, when a frontend change and a schema migration do not. The model names the axes ITSELF and they become the stop criterion; absent or unparseable, the round counter still governs, so coverage is an improvement layered on prior behaviour rather than a dependency.
+- Key decision: the brief's ceiling is DERIVED from the planner's, not restated (§5.7). The brief IS the planner's input, so a ceiling below it would cap the requirement statement under the budget of the thing that reads it — and running the pipeline's one lossy step on a gateway default nothing had chosen is how the compression went unnoticed.
+- Key decision: every gate row was verified by sabotage. This caught a real hole — the first draft asserted the reasoning function honours its parameters while 51 sibling tests passed with the node's wiring severed, the same intra-module blindness 8.22 named. Rows now exercise the node and all three round-advancing exits.
+- Deferred: DEBT-233 — the gateway's `<thinking>` scaffold is still a fixed 4-beat template on every free-form call, left alone because it is global.
+
+---
+
 ## 8.22: Seam Repair — Graph Wiring, Replay Safety, Truncation Reporting — 2026-08-31
 **Status:** COMPLETE | **Gates:** ruff 0 · mypy 0/485 · pyright 0 · pytest 3409 passed/2 skipped · npm compile 0 · npm test 321 passed
 - Shipped: six live failures fixed at their causes — accepting a plan raised `KeyError('step_dispatch')` (the router's accepted-plan verdict was absent from its own path-map) and surfaced as an unrelated BYOM message; the ReAct cell exited after one iteration whenever it read a file; a failed planner still dispatched to the coder, whose derived error then obscured the real one; a cloud model was budgeted at a flat 8192 against a 1M-token window and truncated mid-object; the grill reported schema faults as an unreachable engine; a blank-note brief rewrite was indistinguishable from a cancel.

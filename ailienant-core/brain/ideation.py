@@ -68,20 +68,92 @@ BRIEF_REVIEW_KIND: str = "BRIEF_REVIEW"
 # pass over the same dialogue.
 _BRIEF_MAX_REVISIONS: int = 3
 
+# Output ceiling for the distillation. Derived from the planner's own declared
+# ceiling rather than restated as a second literal (§5.7): the brief IS the
+# planner's input, so a ceiling below the planner's would cap the requirement
+# statement under the budget of the thing that reads it, and the two would drift
+# the moment either was tuned alone. Like the planner's, this is the DECLARED
+# ceiling — `_resolve_distill_budget` reconciles it against the real window.
+from agents.planner import _PLANNER_DRAFT_MAX_MAX_TOKENS as _DISTILL_MAX_MAX_TOKENS  # noqa: E402
+
+
+def _gateway_default_max_tokens() -> int:
+    """The allowance `LLMGateway.ainvoke` applies when a caller passes none.
+
+    Read from the signature rather than restated, so the degrade path below is
+    provably the behaviour this call had before it was budgeted at all — and
+    cannot silently diverge if the gateway's default moves. Falls back to the
+    conservative context default if the signature is ever reshaped.
+    """
+    import inspect
+    from tools.llm_gateway import LLMGateway
+    from brain.agent_context import DEFAULT_CONTEXT_BUDGET
+
+    param = inspect.signature(LLMGateway.ainvoke).parameters.get("max_tokens")
+    default = getattr(param, "default", inspect.Parameter.empty)
+    return default if isinstance(default, int) else DEFAULT_CONTEXT_BUDGET
+
+
+# What the analyst writes in place of an axis list once nothing is left open. A
+# small set rather than one literal because this is matched against free prose:
+# the instruction asks for "none", and a model that answers the equivalent word
+# means the same thing. Anything outside the set is read as a real axis, which
+# keeps the safe direction — an unrecognised word costs one more round, while a
+# loose match would end the interview early.
+_SETTLED_AXES_SENTINELS: frozenset[str] = frozenset({"none", "nothing", "n/a", "-"})
+
 _DISTILL_SYSTEM_PROMPT: str = (
-    "You are the AnalystAgent closing a Socratic planning dialogue. Distill the "
-    "whole conversation into a concise build brief for an autonomous planner — NOT "
-    "a full plan. Return a single JSON object (no prose, no markdown fences):\n"
+    "You are the AnalystAgent closing a Socratic planning dialogue. The interview "
+    "you just ran EARNED context — answers, and your own investigation of the "
+    "developer's real code. Your job is to hand the planner everything of substance "
+    "that came out of it, NOT to summarise it.\n"
+    "Return a single JSON object (no prose, no markdown fences):\n"
     '{\n'
-    '  "intent": "<one tight paragraph: what to build and what done looks like>",\n'
-    '  "constraints": ["<hard technical limits agreed in the dialogue>"],\n'
+    '  "verbatim_requirements": ["<each concrete thing the developer specified, in '
+    'THEIR words>"],\n'
+    '  "intent": "<what to build and what done looks like — as long as the work '
+    'actually requires>",\n'
+    '  "constraints": ["<limits and rules the dialogue settled>"],\n'
     '  "scope_hints": ["<files/areas in or out of scope, if named>"],\n'
+    '  "findings": ["<what you learned about their codebase while investigating>"],\n'
+    '  "open_questions": ["<anything still genuinely unresolved>"],\n'
     '  "ubiquitous_language": {"<term>": "<definition>"}\n'
     '}\n'
-    "Capture only what the dialogue actually settled; do not invent a work "
-    "breakdown, file edits, or steps — the planner does that. Mirror the language "
-    "of the dialogue."
+    "FIDELITY RULES — these outrank brevity everywhere:\n"
+    "- Every specific the developer gave — a number, a name, an API, a path, a "
+    "library, a format, an example, an edge case — is reproduced EXACTLY as they "
+    "wrote it. Never paraphrase a stated requirement into a general description; "
+    '"handle auth" is not an acceptable rendering of a named flow with named '
+    "fields.\n"
+    "- You ADD to what the developer said. You never REPLACE it with something "
+    "shorter. If a detail does not fit a field, it belongs in "
+    "verbatim_requirements.\n"
+    "- Length is not a virtue in either direction: a small task stays small, and a "
+    "detailed one stays detailed. Never drop a specific to make the brief tidier.\n"
+    "- Do not invent a work breakdown, file edits, or steps — the planner does "
+    "that. Capture only what the dialogue and your investigation actually "
+    "established.\n"
+    "Mirror the language of the dialogue."
 )
+
+
+def _reasoning_transcript(reasoning_log: List[str]) -> str:
+    """Render the grill's own per-round reasoning as its own labelled section.
+
+    Kept distinct from the dialogue on purpose: the distillation has to tell what
+    the OPERATOR stated (which it must reproduce verbatim) from what the ANALYST
+    deduced (which it may summarise). Flattening both into one transcript invites
+    exactly the confusion the fidelity rules exist to prevent.
+
+    This is context the interview already paid for — where the analyst looked,
+    what it ruled out — and which reached the operator's screen and then went
+    nowhere, since the transcript only ever carried user/assistant turns.
+    """
+    entries = [str(r).strip() for r in (reasoning_log or []) if str(r).strip()]
+    if not entries:
+        return ""
+    rounds = "\n\n".join(f"[round {i}] {r}" for i, r in enumerate(entries, start=1))
+    return f"### The analyst's own reasoning during the interview\n{rounds}"
 
 
 def _dialogue_transcript(messages: List[Dict[str, Any]]) -> str:
@@ -108,26 +180,76 @@ def _dialogue_transcript(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _compose_planner_brief(brief: Dict[str, Any], fallback: str) -> str:
-    """Render the distilled brief into the prose ``user_input`` the planner reads.
+def _bullets(brief: Dict[str, Any], key: str) -> str:
+    """Render one list field as bullets, or "" when it is absent or empty."""
+    items = [str(i).strip() for i in (brief.get(key) or []) if str(i).strip()]
+    return "\n".join(f"- {i}" for i in items)
 
-    The planner consumes ``user_input`` as its requirement statement; folding the
-    settled intent + constraints + glossary into it lets the planner draft a WBS
-    grounded in the Socratic outcome without re-litigating the dialogue.
+
+def _compose_planner_brief(
+    brief: Dict[str, Any], fallback: str, original_request: str = ""
+) -> str:
+    """Render the distilled brief into the ``user_input`` the planner reads.
+
+    Two blocks with a visible boundary, because they carry different authority.
+    THE REQUEST is what the operator actually asked for, reproduced word for word;
+    the planner may not reinterpret it. WHAT THE INTERVIEW ESTABLISHED is
+    everything the dialogue and the analyst's investigation ADDED on top.
+
+    The split is what stops the brief from restating the request in weaker words.
+    Before it, the distillation replaced the operator's own wording with a
+    paraphrase and the original was gone — a precise request came out of the
+    interview vaguer than it went in, which inverts the point of running one.
+
+    Degrades field by field: a distillation that returns only ``intent`` still
+    composes, and an empty brief falls back to the raw transcript.
     """
-    intent = str(brief.get("intent") or "").strip() or fallback
-    parts: List[str] = [intent]
-    constraints = [str(c) for c in (brief.get("constraints") or []) if str(c).strip()]
-    if constraints:
-        parts.append("Constraints:\n" + "\n".join(f"- {c}" for c in constraints))
-    hints = [str(h) for h in (brief.get("scope_hints") or []) if str(h).strip()]
-    if hints:
-        parts.append("Scope:\n" + "\n".join(f"- {h}" for h in hints))
+    sections: List[str] = []
+
+    original = (original_request or "").strip()
+    if original:
+        sections.append(
+            "## THE REQUEST (verbatim — authoritative)\n"
+            "The developer asked for this. Treat it as the specification; do not "
+            "reinterpret or generalise it. Where anything below appears to "
+            "conflict with it, this wins.\n\n"
+            f"{original}"
+        )
+
+    verbatim = _bullets(brief, "verbatim_requirements")
+    if verbatim:
+        sections.append(f"### Specifics they stated\n{verbatim}")
+
+    detail: List[str] = []
+    intent = str(brief.get("intent") or "").strip()
+    if intent:
+        detail.append(intent)
+    for label, key in (
+        ("Constraints", "constraints"),
+        ("Scope", "scope_hints"),
+        ("Established about the codebase", "findings"),
+        ("Still open", "open_questions"),
+    ):
+        rendered = _bullets(brief, key)
+        if rendered:
+            detail.append(f"{label}:\n{rendered}")
     glossary = brief.get("ubiquitous_language") or {}
     if isinstance(glossary, dict) and glossary:
-        gloss = "; ".join(f"{k} = {v}" for k, v in glossary.items())
-        parts.append(f"Glossary: {gloss}")
-    return "\n\n".join(parts)
+        detail.append("Glossary: " + "; ".join(f"{k} = {v}" for k, v in glossary.items()))
+
+    if detail:
+        header = (
+            "## WHAT THE INTERVIEW ESTABLISHED (additional context)"
+            if original
+            else ""
+        )
+        sections.append("\n\n".join(([header] if header else []) + detail))
+
+    # Nothing usable came back at all — hand over the raw material rather than an
+    # empty requirement statement.
+    if not sections:
+        return (intent or fallback)
+    return "\n\n".join(sections)
 
 
 async def _resolve_brief_review(
@@ -283,12 +405,16 @@ async def run_synthesis_node(
 
     revision_note = state.get("brief_revision_note")
     fallback_intent = _dialogue_transcript(messages) or (state.get("user_input") or "")
+    # The operator's own wording, preserved by task_service before anything could
+    # overwrite it. Absent on a checkpoint written before the channel existed, in
+    # which case the brief composes exactly as it did then.
+    original_request = str(state.get("original_user_request") or "")
     if DEBUG_MODE:
         brief: Dict[str, Any] = {"intent": fallback_intent}
-        planner_brief = fallback_intent
+        planner_brief = _compose_planner_brief(brief, fallback_intent, original_request)
     else:
         brief = await _distill_brief_llm(state, messages, revision_note=revision_note)
-        planner_brief = _compose_planner_brief(brief, fallback_intent)
+        planner_brief = _compose_planner_brief(brief, fallback_intent, original_request)
 
     _raw_gloss = brief.get("ubiquitous_language") or {}
     glossary = (
@@ -307,6 +433,46 @@ async def run_synthesis_node(
     }
 
 
+async def _resolve_distill_budget(state: Dict[str, Any], user_payload: str) -> int:
+    """Output allowance for the distillation, sized against the real served window.
+
+    Same mechanism the planner and coder use — measure the real prompt, probe the
+    real window, take the smaller of the ceiling and what actually fits. The
+    declared ceiling is the planner's, deliberately: the brief is the planner's
+    input, and a step that must not drop detail cannot be allowed a fraction of
+    the budget of the step that consumes it.
+
+    Unlike the planner, an insufficient budget does NOT refuse here. The
+    distillation's contract is that it never blocks the handoff, so a hopeless
+    budget degrades to the gateway default and lets the (possibly truncated)
+    result flow — a shorter brief still beats an ideation turn that dead-ends.
+    """
+    from brain.agent_context import resolve_output_budget, resolve_real_window
+    from tools.token_counter import PrecisionTokenCounter
+    from shared.config import MODEL_BIG
+
+    try:
+        real_window = await resolve_real_window(state, tier=_SYNTHESIS_TIER)
+        prompt_tokens = PrecisionTokenCounter.estimate_with_buffer(
+            f"{_DISTILL_SYSTEM_PROMPT}\n{user_payload}", MODEL_BIG
+        )
+        decision = resolve_output_budget(
+            prompt_tokens=prompt_tokens,
+            real_window=real_window,
+            declared_ceiling=_DISTILL_MAX_MAX_TOKENS,
+        )
+        if decision.ok:
+            return decision.max_tokens
+        logger.warning(
+            "SynthesisNode: output budget too tight (%s) — falling back to the "
+            "gateway default; the brief may be shortened.", decision.reason,
+        )
+    except Exception:  # noqa: BLE001 — budgeting must never block the handoff
+        logger.debug("SynthesisNode: budget resolution failed; using the default.",
+                     exc_info=True)
+    return _gateway_default_max_tokens()
+
+
 async def _distill_brief_llm(
     state: Dict[str, Any],
     messages: List[Dict[str, Any]],
@@ -321,6 +487,11 @@ async def _distill_brief_llm(
     ``revision_note`` is the operator's correction after reading a previous draft.
     It rides in the USER payload, never in the system prompt, so the system message
     stays byte-identical across drafts.
+
+    The output budget is reconciled against the model's REAL served window rather
+    than left to the gateway's generic default, which nothing here ever chose: the
+    step that decides how much of the interview survives was running on a quarter
+    of the allowance the planner consuming its output gets.
     """
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
     from shared.config import MODEL_BIG
@@ -328,8 +499,19 @@ async def _distill_brief_llm(
     transcript = _dialogue_transcript(messages)
     context_block = await _assemble_synthesis_context(state)
     user_payload = transcript
+    reasoning_block = _reasoning_transcript(list(state.get("grill_reasoning_log") or []))
+    if reasoning_block:
+        user_payload = f"{user_payload}\n\n{reasoning_block}"
+    original_request = str(state.get("original_user_request") or "").strip()
+    if original_request:
+        # Stated first and named as authoritative: this is the text whose
+        # specifics the fidelity rules require to survive intact.
+        user_payload = (
+            "### The developer's original request (reproduce its specifics exactly)\n"
+            f"{original_request}\n\n{user_payload}"
+        )
     if context_block:
-        user_payload = f"{transcript}\n\n### Workspace context\n{context_block}"
+        user_payload = f"{user_payload}\n\n### Workspace context\n{context_block}"
     if revision_note:
         user_payload = (
             f"{user_payload}\n\n### Correction to the previous brief\n"
@@ -340,6 +522,7 @@ async def _distill_brief_llm(
 
     session_id: str = state.get("task_id", "")
     try:
+        max_tokens = await _resolve_distill_budget(state, user_payload)
         resp = await LLMGateway.ainvoke(
             messages=[
                 {"role": "system", "content": _DISTILL_SYSTEM_PROMPT},
@@ -348,6 +531,7 @@ async def _distill_brief_llm(
             model=MODEL_BIG,
             temperature=0.0,
             response_format={"type": "json_object"},
+            max_tokens=max_tokens,
             session_id=session_id,
             state=state,
         )
@@ -415,6 +599,26 @@ def route_after_synthesis(state: Dict[str, Any]) -> str:
     return END
 
 
+def _coverage_settled(state: Dict[str, Any]) -> bool:
+    """True once the analyst reports no open dimensions left on this task.
+
+    The axes are the model's own — it names what THIS task turns on, so a
+    frontend change and a schema migration are not forced through the same set
+    of angles. It closes the round with the sentinel below when every axis it
+    named is resolved.
+
+    Returns False whenever the signal is absent or unparseable — a model that
+    ignored the format, a reasoning pass cut short by its token ceiling, a
+    checkpoint written before the channel existed. That is the designed degrade
+    path, not a failure: the caller then falls back to the round counter, which
+    is the behaviour that shipped before coverage existed.
+    """
+    axes = state.get("grill_coverage_axes") or []
+    if not isinstance(axes, list) or not axes:
+        return False
+    return all(str(a).strip().lower() in _SETTLED_AXES_SENTINELS for a in axes)
+
+
 def route_after_analyst(state: Dict[str, Any]) -> str:
     """Conditional edge after analyst_grill.
 
@@ -423,16 +627,27 @@ def route_after_analyst(state: Dict[str, Any]) -> str:
         and load-bearing: without it the self-loop below would retry a dead model
         until the graph's recursion limit.)
     shared_understanding_reached=True  → synthesis_node (compress, hand off)
+    coverage settled                   → synthesis_node (the analyst itself named
+        the dimensions this task turns on, and now reports none left open — a
+        criterion the task supplies rather than a fixed round budget spending
+        rounds on a task that ran out of questions two rounds ago)
     otherwise                          → analyst_grill (loop for another batch of
         questions). The pause for the human's answer already happened inside
         the node via interrupt()/resume — this edge only decides whether
         another round is needed, never whether to suspend for an answer.
+
+    Returns only values this edge's own path-map declares (brain/ideation.py's
+    add_conditional_edges below); the coverage branch deliberately reuses
+    synthesis_node rather than introducing a destination.
     """
     if state.get("hitl_pending"):
         logger.info("route_after_analyst: hitl_pending → END (degraded suspend).")
         return END
     if state.get("shared_understanding_reached"):
         logger.info("route_after_analyst: understanding reached → synthesis_node.")
+        return "synthesis_node"
+    if _coverage_settled(state):
+        logger.info("route_after_analyst: coverage settled → synthesis_node.")
         return "synthesis_node"
     logger.info("route_after_analyst: another round needed → analyst_grill.")
     return "analyst_grill"

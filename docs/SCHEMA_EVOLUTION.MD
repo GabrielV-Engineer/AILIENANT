@@ -3313,3 +3313,77 @@ Steering lands at a loop boundary. Cell-routed steps pick it up per iteration; t
 path has no iteration to re-enter, so a step routed there receives it only at the next graph node
 boundary. Logged rather than hidden — see the tech-debt backlog.
 
+
+---
+
+## §61 — Ideation Fidelity: `original_user_request` / `grill_reasoning_log` / `grill_coverage_axes` (Manifest 8.23)
+
+### The problem these channels exist to solve
+
+`user_input` carried two incompatible roles. It is the operator's request AND the slot
+`synthesis_node` overwrites with the distilled brief (`brain/ideation.py`, see §58). After that
+overwrite the operator's own wording existed nowhere reachable: the planner reads `user_input`,
+never `messages`, so a request stating exact figures, API names and paths arrived as whatever the
+distillation had paraphrased it into — with no way for any downstream consumer to recover the
+original, or even to detect that specificity had been lost. A dropped requirement surfaces as an
+absence, which nothing can render.
+
+Separately, the grill's reasoning pass produced text that reached the operator's screen and was
+then discarded. It was never given the dialogue either, so successive rounds ran on inputs that
+had not moved and returned near-identical prose.
+
+### The three channels (all additive, §10)
+
+```
+original_user_request: str            # scalar, written once, never mutated
+grill_reasoning_log:   List[str]      # Annotated[..., operator.add] — append-only
+grill_coverage_axes:   List[str]      # scalar overwrite — each round restates the set
+```
+
+**`original_user_request`** is seeded in `core/task_service.py::_build_initial_state` from the same
+`payload.task_prompt` that seeds `user_input`, and no graph node writes it. It is deliberately NOT
+stored in `messages`: that list is what `brain/summarizer.py` compacts at `THRESHOLD_RATIO`, so
+anything living there can be summarised away. A separate channel is unreachable to compaction by
+construction, with no edit to the summarizer (Division 8.16's file).
+
+This is **not** a competing source of truth. The request is the primary layer and the brief the
+derived one; `_compose_planner_brief` renders the boundary explicitly (THE REQUEST, authoritative ·
+WHAT THE INTERVIEW ESTABLISHED, additive) with a stated precedence rule. Before this channel the
+invariant was not preserved but *broken* — the primary layer was destroyed and only the derivative
+survived.
+
+**`grill_reasoning_log`** appends one entry per round. Three readers, deliberately asymmetric: the
+next round takes **only the last entry**, while the distillation reads the whole log. Carrying the
+accumulation into the per-round prompt would grow it every round and shrink the output budget
+derived from the same window — the failure mode 8.22.3 had to rewrite the planner's retry
+corrective to avoid.
+
+**`grill_coverage_axes`** holds the dimensions the model itself named for the task at hand, parsed
+from an `AXES:` line it closes its reasoning with. Read by `route_after_analyst` as a stop
+criterion; `_GRILL_MAX_ROUNDS` becomes a safety ceiling rather than the criterion. No fixed axis
+vocabulary exists anywhere — a frontend change and a schema migration do not turn on the same
+dimensions, and imposing one list would make every interview the same interview.
+
+### Consumer tolerance
+
+All three are absent on any checkpoint written before this division, and every reader treats
+absence as the pre-existing behaviour rather than an error:
+
+| Reader | On absent channel |
+|---|---|
+| `_stream_grill_reasoning` | no memory block in the prompt — the round-1 shape |
+| `route_after_analyst` | `_coverage_settled` returns False → the round counter governs, as before |
+| `_compose_planner_brief` | omits the REQUEST block entirely; composes exactly as it did pre-8.23 |
+| `_distill_brief_llm` | omits the request and reasoning sections from its payload |
+
+`_coverage_settled` also returns False for an axes list it cannot parse (a model that ignored the
+format, a reasoning pass cut short by its token ceiling). Unparseable is treated as unknown, never
+as settled: the safe direction costs one extra round, while the inverse would end an interview
+early.
+
+### The distillation's brief schema (additive fields)
+
+`_DISTILL_SYSTEM_PROMPT` gains `verbatim_requirements`, `findings` and `open_questions` alongside
+the existing `intent` / `constraints` / `scope_hints` / `ubiquitous_language`. `_compose_planner_brief`
+renders each field only when present, so a model that returns the older four-key shape still
+composes a valid brief — the soft-schema degradation §58 established is unchanged.

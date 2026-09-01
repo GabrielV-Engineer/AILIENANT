@@ -90,6 +90,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-230 | No gate validates compiled-graph integrity beyond conditional-edge path-maps — `Send()` targets unchecked; four dispatch nodes bypass `assert_declared_channels`; a computed router verdict is invisible to the static gate | MEDIUM | Verification coverage | future graph-integrity slice | Floating |
 | DEBT-231 | `planner_retry_count` (4 writes, 0 readers) and `send_telemetry` (0 callers, so `routing_warning` never reaches the user) are dead signals no enabled lint rule can see | LOW | Dead code / observability | wire the consumer or delete the producer | Floating |
 | DEBT-232 | Provider-side reasoning tokens are not budgeted on the strict-JSON `response_format` path — a model billing reasoning inside `completion_tokens` can exhaust `max_tokens` before the object closes | LOW | Correctness gap (mitigated) | future gateway thinking-budget slice | Floating |
+| DEBT-233 | `_inject_reasoning_scaffold` imposes one fixed 4-beat template on every free-form call, so all reasoning across the app shares a shape | LOW | Output quality / uniformity | future gateway prompt slice | Floating |
 
 ---
 
@@ -121,6 +122,13 @@ not decay: all three items are pre-existing conditions this phase found and name
 debt it introduced. Worth stating plainly, because it is the shape this metric is worst at — a
 ledger over KNOWN debt cannot fall when an audit converts unknown defects into tracked ones, and
 reading the increase as regression would penalize exactly the work that should be rewarded.
+
+**Recomputed (2026-09-01, 8.23 closure):** DEBT-233 (1 LOW — the gateway's global reasoning
+scaffold, left deliberately out of scope) moves the dashboard to 0 HIGH, 9 MEDIUM, 18 LOW →
+weighted 36 · SLOC 41,337 (`radon raw -s`, same exclusions) → **Debt Ratio ≈ 0.87 / KLOC**.
+Essentially flat against 8.22's 0.85: this division removed the analyst's own fixed reasoning
+template and logged the one remaining below it, so the ratio moved by a single LOW item on a
+slightly larger codebase.
 
 ---
 
@@ -1807,6 +1815,16 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Gap:** were it wired to a real tool-calling model, `bind_tools(CELL_TOOLS)` would name each tool after its Pydantic class (`RunTerminalArgs`), while the dispatcher compares against `TOOL_NAME` (`run_terminal`) — so every native tool call would fall through to the registry-fallback branch and resolve as an unknown name.
 - **Why it was left:** 8.20 made the names derivable (`_CellToolArgs.TOOL_NAME`), which is the prerequisite; wiring native tool-calling is a separate decision about whether the cell should stop parsing JSON out of text at all.
 - **What it would take:** either delete the unused seam, or convert `CELL_TOOLS` into properly-named tool objects and switch `_default_reasoner` to the native path behind a capability check.
+- **Phase:** unscheduled.
+
+---
+
+### DEBT-233 [LOW · Floating] — One fixed reasoning template is imposed on every free-form call
+
+- **Date:** 2026-09-01
+- **Gap:** `tools/llm_gateway.py::_inject_reasoning_scaffold` appends a module-constant instruction to every non-native `free_form_answer=True` call, prescribing a fixed four-beat shape (what you are weighing → trade-offs → what to check → conclusion). Division 8.23 removed the analyst's OWN fixed checklist, which was stacked on top of this one, but the gateway's remains — so every reasoning surface in the app still narrates to the same rhythm regardless of what it is reasoning about.
+- **Why it was left:** the scaffold is global. Every free-form caller inherits it, so changing its shape is a behaviour change across surfaces this division neither touched nor measured, and the round-to-round repetition it was blamed for had a nearer cause (identical inputs plus greedy decoding), now fixed. Removing it wholesale also risks the opposite failure — an unstructured model producing no usable narrative at all in the Thought Box.
+- **What it would take:** make the scaffold a per-caller parameter with the current text as the default, so a caller that wants open-ended reasoning can opt out without altering anyone else's; then evaluate per surface whether the structure earns its place.
 - **Phase:** unscheduled.
 
 ---

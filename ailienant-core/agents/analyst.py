@@ -63,6 +63,26 @@ _GRILL_TIER: str = next(
 # waits, not the question batch, which carries its own budget.
 _GRILL_REASONING_MAX_TOKENS: int = 512
 
+# The reasoning pass explores; the question batch commits. Greedy decoding on the
+# exploratory half made every round restate the previous one almost verbatim,
+# since the round's inputs barely move. The batch call keeps its own low
+# temperature — it answers to a strict JSON schema, where variance is only risk.
+_GRILL_REASONING_TEMPERATURE: float = 0.6
+
+# Marker the reasoning pass closes with, naming the dimensions IT judged relevant
+# to THIS task. Parsed back out for the coverage stop; the model picks the axes,
+# so nothing here presumes what a task is made of.
+_AXES_MARKER: str = "AXES:"
+
+# Cap on axes carried forward. A model that answers with a paragraph instead of a
+# short list would otherwise turn the stop criterion into a prompt of its own.
+_MAX_COVERAGE_AXES: int = 8
+
+# Longest an axis label may be before it is treated as prose that missed the
+# format. Generous enough for "state management across the wizard", short enough
+# to reject a sentence.
+_MAX_AXIS_CHARS: int = 60
+
 _AGREEMENT_SIGNALS = frozenset([
     # English
     "looks good", "sounds good", "yes", "approved", "agreed",
@@ -456,6 +476,23 @@ async def run_analyst_node(
     # Filled by the generator below with why it gave up, so a failure is reported
     # as what it actually was. Stays empty on the DEBUG path, which cannot fail.
     _grill_failure: Dict[str, str] = {}
+    round_reasoning: str = ""
+
+    def _with_reasoning(result: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach this round's captured reasoning and the axes it named.
+
+        Applied to every exit that advances the round, so a round whose reasoning
+        ran is never lost to whichever branch the batch outcome takes. Both keys
+        are omitted when there is nothing to record, keeping the no-op turn's
+        minimal state-delta contract (the same reason tool_dispatch_trace is
+        conditional).
+        """
+        if round_reasoning:
+            result["grill_reasoning_log"] = [round_reasoning]
+            axes = _parse_coverage_axes(round_reasoning)
+            if axes:
+                result["grill_coverage_axes"] = axes
+        return result
     if DEBUG_MODE:
         logger.info("AnalystAgent (DEBUG): synthetic question batch generated.")
         batch = _debug_grill_batch(round_count)
@@ -479,14 +516,27 @@ async def run_analyst_node(
             context_block = (
                 f"{context_block}\n\n{grounding}" if context_block else grounding
             )
-        await _stream_grill_reasoning(
-            user_input=user_input,
+        # The reasoning pass gets what the previous round concluded and what the
+        # operator has since answered. Without them it ran on inputs that barely
+        # move between rounds — the same task text, the same workspace — and
+        # returned the same reasoning each time. Only the LAST entry is carried:
+        # see the channel's own note in brain/state.py on why this must not
+        # accumulate into the prompt.
+        _prior_log: List[str] = list(state.get("grill_reasoning_log") or [])
+        # Prefer the request as the operator actually wrote it; user_input is stale
+        # on a self-loop continuation (see the round_count == 0 guard above).
+        _task_text = state.get("original_user_request") or user_input
+        round_reasoning = await _stream_grill_reasoning(
+            user_input=_task_text,
             context_block=context_block,
             soul_prompt=soul_prompt,
             session_id=task_id,
             on_thinking=_on_thinking,
             thinking_on=_thinking_on,
             thinking_budget=_thinking_budget,
+            prior_reasoning=_prior_log[-1] if _prior_log else "",
+            answered_so_far=_render_answered_so_far(messages),
+            known_axes=list(state.get("grill_coverage_axes") or []),
         )
         await _emit("grill_composing_questions")
         batch = await _generate_grill_questions_llm(
@@ -517,7 +567,7 @@ async def run_analyst_node(
         }
         if dispatch_trace:
             degraded["tool_dispatch_trace"] = dispatch_trace
-        return degraded
+        return _with_reasoning(degraded)
 
     if not batch.questions:
         result: Dict[str, Any] = {
@@ -528,7 +578,7 @@ async def run_analyst_node(
         }
         if dispatch_trace:
             result["tool_dispatch_trace"] = dispatch_trace
-        return result
+        return _with_reasoning(result)
 
     # Commit the batch to state and return — do NOT resolve answers here. The
     # ask phase (top of this function, next self-loop visit) is where
@@ -546,7 +596,7 @@ async def run_analyst_node(
     # the read-only no-tool turn keeps its minimal state-delta contract.
     if dispatch_trace:
         committed["tool_dispatch_trace"] = dispatch_trace
-    return committed
+    return _with_reasoning(committed)
 
 
 async def _assemble_socratic_context(state: Dict[str, Any]) -> str:
@@ -689,6 +739,41 @@ def _build_grill_llm_messages(
     return llm_messages
 
 
+def _render_answered_so_far(messages: List[Dict[str, Any]]) -> str:
+    """Flatten what the operator has already settled, for the reasoning prompt.
+
+    Only the operator's own turns: the analyst's previous questions are already
+    implied by the answers, and replaying both doubles the block for no added
+    signal.
+    """
+    answers = [
+        str(m.get("content", "")).strip()
+        for m in messages
+        if m.get("role") == "user" and str(m.get("content", "")).strip()
+    ]
+    return "\n".join(f"- {a}" for a in answers)
+
+
+def _parse_coverage_axes(reasoning: str) -> List[str]:
+    """Pull the axes the model named out of its own closing line.
+
+    Free prose, so this can legitimately find nothing — a model that ignored the
+    marker, or a pass that was cut short by its token ceiling. An empty result is
+    the documented degrade path, not an error: the caller falls back to the round
+    counter, which is exactly today's behaviour.
+    """
+    marker_at = reasoning.rfind(_AXES_MARKER)
+    if marker_at < 0:
+        return []
+    tail = reasoning[marker_at + len(_AXES_MARKER):].splitlines()[0]
+    axes: List[str] = []
+    for raw in tail.split(","):
+        axis = raw.strip().strip(".;-*[]").strip()
+        if axis and len(axis) <= _MAX_AXIS_CHARS and axis not in axes:
+            axes.append(axis)
+    return axes[:_MAX_COVERAGE_AXES]
+
+
 async def _stream_grill_reasoning(
     *,
     user_input: str,
@@ -698,8 +783,11 @@ async def _stream_grill_reasoning(
     on_thinking: Optional[Callable[[str, str], Awaitable[None]]],
     thinking_on: bool,
     thinking_budget: int,
-) -> None:
-    """Stream the analyst's thinking to the Thought Box before it drafts questions.
+    prior_reasoning: str = "",
+    answered_so_far: str = "",
+    known_axes: Optional[List[str]] = None,
+) -> str:
+    """Stream the analyst's thinking to the Thought Box, and return what it said.
 
     A separate free-form completion rather than reasoning attached to the batch
     call: that call is a strict ``json_object`` contract, and a reasoning preamble
@@ -712,33 +800,68 @@ async def _stream_grill_reasoning(
     "restore" the native short-circuit here — it would silence the interview
     again on exactly the best models.
 
+    The returned text is the round's actual reasoning, kept rather than discarded
+    for three readers: the NEXT round (so it stops re-deriving what it already
+    concluded — the whole reason consecutive rounds used to read alike), the
+    distillation (which otherwise never sees where the analyst looked or what it
+    ruled out), and the coverage stop.
+
+    ``prior_reasoning`` is the immediately preceding round's text ONLY, never the
+    accumulated log: the prompt must not grow per round, or it shrinks the output
+    budget derived from the same window — the failure the planner's retry
+    corrective had to be rewritten to avoid.
+
     Best-effort throughout: a sink or generation fault leaves the interview
-    unchanged. A real abort still propagates.
+    unchanged, and returns "". A real abort still propagates.
     """
     if on_thinking is None or not thinking_on:
-        return
+        return ""
 
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
 
-    prompt = (
-        f"The developer asked: '{user_input}'.\n\n"
-        f"What is already known about their workspace:\n{context_block}\n\n"
-        "Before writing any clarifying questions, think out loud about what is "
-        "still genuinely ambiguous: what you already know, what you would have to "
-        "assume to proceed, and which unknown would change the approach most. "
-        "Write concise, conceptual prose — no questions yet, no code, no JSON."
+    sections: List[str] = [
+        f"The developer asked: '{user_input}'.",
+        f"What is already known about their workspace:\n{context_block}",
+    ]
+    if answered_so_far:
+        sections.append(f"What they have already told you:\n{answered_so_far}")
+    if prior_reasoning:
+        # Negative, not prescriptive: it says what is already settled, never what
+        # to examine next. A fixed set of angles would make every task's interview
+        # the same interview, which is the failure mode this whole pass exists to
+        # break out of.
+        sections.append(
+            "You already reasoned this far in the previous round:\n"
+            f"{prior_reasoning}\n\n"
+            "Do not restate any of it. Take the thinking FURTHER — what does the "
+            "developer's answer above open up, contradict, or leave unresolved?"
+        )
+    if known_axes:
+        sections.append(
+            "Dimensions you named earlier as mattering here: "
+            + ", ".join(known_axes)
+            + ". Note which are now settled and which are still open."
+        )
+    sections.append(
+        "Think out loud about what is still genuinely ambiguous, in concise "
+        "conceptual prose — no questions yet, no code, no JSON.\n"
+        f"Close with one final line, exactly '{_AXES_MARKER} a, b, c', naming the "
+        "dimensions this particular task turns on — whatever they actually are "
+        "for this work. If every dimension you name is now settled, close with "
+        f"'{_AXES_MARKER} none'."
     )
     messages = [
         {"role": "system", "content": soul_prompt},
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": "\n\n".join(sections)},
     ]
 
+    captured: List[str] = []
     sink_live = True
     try:
         async for delta in LLMGateway.astream_reasoning(
             messages,
             tier=_GRILL_TIER,
-            temperature=0.0,
+            temperature=_GRILL_REASONING_TEMPERATURE,
             max_tokens=_GRILL_REASONING_MAX_TOKENS,
             session_id=session_id,
             thinking_budget_tokens=thinking_budget,
@@ -746,6 +869,8 @@ async def _stream_grill_reasoning(
         ):
             # The whole free-form output is reasoning, so both 'thinking' and
             # 'text' deltas belong in the Thought Box.
+            if delta.text:
+                captured.append(delta.text)
             if sink_live and delta.text:
                 try:
                     await on_thinking(delta.text, delta.source)
@@ -760,6 +885,9 @@ async def _stream_grill_reasoning(
         raise
     except Exception:  # noqa: BLE001 — reasoning never blocks the interview
         logger.debug("grill reasoning pass failed (non-fatal)", exc_info=True)
+    # Whatever streamed before a mid-flight fault is still real reasoning; the
+    # partial text is worth more to the next round than an empty string.
+    return "".join(captured).strip()
 
 
 def _is_transport_failure(exc: BaseException) -> bool:
