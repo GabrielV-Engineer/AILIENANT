@@ -913,6 +913,39 @@ def _is_transport_failure(exc: BaseException) -> bool:
         return False
 
 
+def _is_provider_unavailable(exc: BaseException) -> bool:
+    """True when a reachable provider refused this call *for now*.
+
+    A narrower reading of the transport bucket: the endpoint answered, but with
+    a capacity/quota refusal (503, 429, 5xx) rather than a result. It needs the
+    opposite response from an endpoint nothing is listening on — waiting or
+    using another tier fixes it, starting a local engine does not. Retrying the
+    same target immediately cannot help either, which is why the caller backs
+    off and fails over instead.
+    """
+    try:
+        import litellm
+
+        return isinstance(
+            exc,
+            (
+                litellm.exceptions.ServiceUnavailableError,
+                litellm.exceptions.RateLimitError,
+                litellm.exceptions.InternalServerError,
+            ),
+        )
+    except Exception:  # noqa: BLE001 — litellm shape varies by version; default to "not a refusal"
+        logger.debug("provider-unavailable classification degraded", exc_info=True)
+        return False
+
+
+# Pause before re-issuing a call a provider refused for capacity reasons. A
+# retry with no delay reaches the same overloaded backend and fails identically;
+# this is short enough not to strand an interactive turn, long enough to clear a
+# momentary spike.
+_GRILL_RETRY_BACKOFF_S: float = 1.5
+
+
 async def _generate_grill_questions_llm(
     messages: List[Dict[str, Any]],
     soul_prompt: str,
@@ -939,7 +972,7 @@ async def _generate_grill_questions_llm(
     the graph.
     """
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
-    from core.config.model_resolver import get_chat_target
+    from core.config.model_resolver import get_chat_target, get_failover_target
 
     # Resolve the BYOM target up front. Without this, the invoke below silently
     # falls back to the litellm proxy when no preset is active and burns the full
@@ -952,12 +985,16 @@ async def _generate_grill_questions_llm(
         return None
 
     llm_messages = _build_grill_llm_messages(messages, soul_prompt, context_block)
+    # The configured tier stays the preferred target; a failover only ever supplies
+    # an ADDITIONAL attempt, so a healthy preset never silently runs elsewhere.
+    model = _GRILL_MODEL
+    attempted_failover = False
 
     for attempt in range(2):
         try:
             response = await LLMGateway.ainvoke(
                 messages=llm_messages,
-                model=_GRILL_MODEL,
+                model=model,
                 temperature=0.2,
                 response_format={"type": "json_object"},
                 session_id=session_id,
@@ -967,26 +1004,54 @@ async def _generate_grill_questions_llm(
             return GrillQuestionBatch.model_validate(parsed)
         except Exception as exc:  # noqa: BLE001 — retried once, then degrades below
             logger.warning(
-                "AnalystAgent grill-question generation failed attempt=%d [%s: %s]",
-                attempt + 1, type(exc).__name__, exc, exc_info=True,
+                "AnalystAgent grill-question generation failed attempt=%d model=%s [%s: %s]",
+                attempt + 1, model, type(exc).__name__, exc, exc_info=True,
             )
+            unavailable = _is_provider_unavailable(exc)
             if failure is not None:
-                # A transport fault means the engine really is unreachable; anything
-                # else (ValidationError, a JSON fault, a malformed envelope) means it
-                # answered and the answer was unusable — a different fix entirely.
+                # Three outcomes, three different user actions: a provider that
+                # refused for capacity (wait / switch tier), an endpoint nothing
+                # answered on (start the engine), and a model that answered
+                # unusably (use a larger tier). Collapsing the first two sent the
+                # user to restart a local engine over a cloud rate limit.
                 failure["reason"] = (
-                    "unreachable" if _is_transport_failure(exc) else "malformed"
+                    "unavailable" if unavailable
+                    else "unreachable" if _is_transport_failure(exc)
+                    else "malformed"
                 )
                 failure["detail"] = f"{type(exc).__name__}: {exc}"
             if attempt == 0:
-                llm_messages.append({
-                    "role": "user",
-                    "content": (
-                        f"That response was not valid JSON matching the required "
-                        f"shape. Error: {exc}. Respond again with ONLY the JSON object."
-                    ),
-                })
-    logger.warning("AnalystAgent: grill-question generation exhausted retries.")
+                if unavailable:
+                    # Same overloaded backend on an immediate retry fails identically:
+                    # pause, then prefer a different target if the preset declares one.
+                    await asyncio.sleep(_GRILL_RETRY_BACKOFF_S)
+                    _current = get_chat_target(_GRILL_TIER)
+                    _next = (
+                        get_failover_target(_GRILL_TIER, exclude_model=_current.model)
+                        if _current is not None else None
+                    )
+                    if _next is not None:
+                        model = _next.model
+                        attempted_failover = True
+                        logger.warning(
+                            "AnalystAgent: %s unavailable — retrying the batch on %s.",
+                            _GRILL_TIER, model,
+                        )
+                else:
+                    # Only a malformed answer earns the corrective: telling a model
+                    # its JSON was invalid when the call never reached it is a false
+                    # accusation that also poisons the retry's own prompt.
+                    llm_messages.append({
+                        "role": "user",
+                        "content": (
+                            f"That response was not valid JSON matching the required "
+                            f"shape. Error: {exc}. Respond again with ONLY the JSON object."
+                        ),
+                    })
+    logger.warning(
+        "AnalystAgent: grill-question generation exhausted retries (failover=%s).",
+        attempted_failover,
+    )
     return None
 
 
@@ -1002,17 +1067,31 @@ _ANALYST_GRILL_MALFORMED: str = (
     "without the interview."
 )
 
+_ANALYST_GRILL_UNAVAILABLE: str = (
+    "The model provider turned this request away — it is rate-limited or "
+    "temporarily overloaded, not offline. I already retried on another tier. "
+    "Send your request again in a moment, or point the interview tier at a "
+    "model that is free right now (Dashboard → BYOM)."
+)
+
 
 def _grill_failure_message(failure: Dict[str, str]) -> str:
     """The user-facing notice for a grill that produced no batch.
 
-    ``failure["reason"]`` distinguishes an engine that never answered from one
-    that answered unusably. They have opposite fixes, so a single message for
-    both actively misdirects: the malformed case had users restarting an engine
-    that was already running and responding.
+    ``failure["reason"]`` separates three causes with three different fixes: a
+    provider refusing for capacity (wait or switch tier), an endpoint nothing
+    answered on (start the engine), and a model that answered unusably (use a
+    larger tier). One message for all of them actively misdirects — a cloud rate
+    limit read as "start your engine" sends the user to a local process that was
+    never involved.
     """
-    if failure.get("reason") == "malformed":
-        detail = failure.get("detail")
+    reason = failure.get("reason")
+    detail = failure.get("detail")
+    if reason == "unavailable":
+        if detail:
+            logger.info("AnalystAgent: grill provider unavailable — %s", detail)
+        return _ANALYST_GRILL_UNAVAILABLE
+    if reason == "malformed":
         if detail:
             logger.info("AnalystAgent: grill batch unusable — %s", detail)
         return _ANALYST_GRILL_MALFORMED

@@ -49,17 +49,22 @@ export async function resolveAbortMeshOutcome(
     wsStatus: WsConnectionStatus,
     deps: {
         sendWs: (payload: unknown) => void;
-        abortViaHttp: (sessionId: string) => Promise<{ signalled: boolean }>;
+        abortViaHttp: (sessionId: string) => Promise<{ signalled: boolean; reachable: boolean }>;
     },
-): Promise<{ sentViaWs: boolean; httpAck?: { session_id: string; signalled: boolean } }> {
+): Promise<{
+    sentViaWs: boolean;
+    httpAck?: { session_id: string; signalled: boolean; reachable: boolean };
+}> {
     if (wsStatus !== 'connected') {
         // Socket is down (or reconnecting) — client_abort_mesh can't reach the
         // backend over WS. Fall back to the HTTP abort endpoint (same
         // idempotent task_service.abort_session underneath) so Stop still
         // works in exactly the scenario where it matters most — a
         // stuck/overloaded backend that also dropped the WS heartbeat.
-        const { signalled } = await deps.abortViaHttp(sessionId);
-        return { sentViaWs: false, httpAck: { session_id: sessionId, signalled } };
+        // `reachable` rides along so the UI can tell "no task was running" apart
+        // from "the backend never answered" — the two need opposite responses.
+        const { signalled, reachable } = await deps.abortViaHttp(sessionId);
+        return { sentViaWs: false, httpAck: { session_id: sessionId, signalled, reachable } };
     }
     deps.sendWs({
         event_type: 'client_abort_mesh',
@@ -470,7 +475,9 @@ export class WorkspacePanelManager {
     // rehydration forever. A later Map.set from a rapid second reveal simply
     // replaces the pending callback; a stale timer that fires after the map entry
     // was already consumed finds nothing and is a safe no-op.
-    private _pendingRehydration: Map<string, () => void> = new Map();
+    // Async because rehydration now reconciles the active turn against the
+    // backend before restoring it; both call sites are fire-and-forget.
+    private _pendingRehydration: Map<string, () => void | Promise<void>> = new Map();
     private static readonly REHYDRATION_READY_TIMEOUT_MS = 3000;
     // Per-session streaming code tokenizer (host-push incremental AST).
     // Keyed by session.id; reset on stream-end and on WS disconnect.
@@ -785,7 +792,7 @@ export class WorkspacePanelManager {
             // from a stale creation-time data-initial snapshot. Re-post the
             // authoritative host transcript; the webview merges it by message id.
             if (e.webviewPanel.visible) {
-                const doRehydrate = () => {
+                const doRehydrate = async (): Promise<void> => {
                     const t = this._getTranscript(session.id);
                     e.webviewPanel.webview.postMessage({
                         type: 'REHYDRATE_TRANSCRIPT',
@@ -833,11 +840,22 @@ export class WorkspacePanelManager {
                     // one that was silently cancelled the moment the tab is switched.
                     const running = this._runningTasks.get(session.id);
                     if (running) {
-                        e.webviewPanel.webview.postMessage({
-                            type: 'ACTIVE_TASK_RESTORED',
-                            prompt: running.prompt,
-                            startedAt: running.startedAt,
-                        });
+                        // Host memory says a turn is live; the backend is the only
+                        // thing that actually knows. Reconcile before restoring, so
+                        // a turn that ended while this tab was hidden doesn't come
+                        // back as a spinner that never resolves. A null answer (the
+                        // backend could not be reached) deliberately keeps the old
+                        // behaviour rather than clearing a turn that may be running.
+                        const live = await APIClient.getInstance().getTaskStatus(session.id);
+                        if (live !== null && live.status !== 'running') {
+                            this._runningTasks.delete(session.id);
+                        } else {
+                            e.webviewPanel.webview.postMessage({
+                                type: 'ACTIVE_TASK_RESTORED',
+                                prompt: running.prompt,
+                                startedAt: running.startedAt,
+                            });
+                        }
                     }
                 };
                 this._pendingRehydration.set(session.id, doRehydrate);
@@ -845,7 +863,7 @@ export class WorkspacePanelManager {
                     const pending = this._pendingRehydration.get(session.id);
                     if (pending) {
                         this._pendingRehydration.delete(session.id);
-                        pending();
+                        void pending();
                     }
                 }, WorkspacePanelManager.REHYDRATION_READY_TIMEOUT_MS);
             }
@@ -1548,7 +1566,7 @@ export class WorkspacePanelManager {
                     const pending = this._pendingRehydration.get(session.id);
                     if (pending) {
                         this._pendingRehydration.delete(session.id);
-                        pending();
+                        void pending();
                     }
                     break;
                 }

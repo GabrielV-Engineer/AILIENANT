@@ -29,15 +29,17 @@ suite('Fix 3 — APIClient.abortTaskViaHttp', () => {
             new Response(JSON.stringify({ signalled: true }), { status: 200 })) as typeof fetch;
 
         const result = await APIClient.getInstance().abortTaskViaHttp('sess-ok');
-        assert.deepStrictEqual(result, { signalled: true });
+        assert.deepStrictEqual(result, { signalled: true, reachable: true });
     });
 
     test('a non-OK HTTP response degrades to signalled: false, not a thrown error', async () => {
         globalThis.fetch = (async () =>
             new Response('Internal Server Error', { status: 500 })) as typeof fetch;
 
+        // The backend answered (with a 500), so the request DID reach it —
+        // `reachable` stays true. Only a transport failure means unreachable.
         const result = await APIClient.getInstance().abortTaskViaHttp('sess-500');
-        assert.deepStrictEqual(result, { signalled: false });
+        assert.deepStrictEqual(result, { signalled: false, reachable: true });
     });
 
     test('a network failure degrades to signalled: false, never an uncaught rejection', async () => {
@@ -45,15 +47,18 @@ suite('Fix 3 — APIClient.abortTaskViaHttp', () => {
             throw new TypeError('fetch failed');
         }) as typeof fetch;
 
+        // The one genuinely unreachable case: nothing answered at all.
         const result = await APIClient.getInstance().abortTaskViaHttp('sess-network-down');
-        assert.deepStrictEqual(result, { signalled: false });
+        assert.deepStrictEqual(result, { signalled: false, reachable: false });
     });
 
     test('a malformed (non-JSON) OK response degrades to signalled: false', async () => {
         globalThis.fetch = (async () =>
             new Response('not json', { status: 200 })) as typeof fetch;
 
+        // An unparseable body is still a body: the backend was reached, so this
+        // must not be reported to the user as a connectivity failure.
         const result = await APIClient.getInstance().abortTaskViaHttp('sess-malformed');
-        assert.deepStrictEqual(result, { signalled: false });
+        assert.deepStrictEqual(result, { signalled: false, reachable: true });
     });
 });

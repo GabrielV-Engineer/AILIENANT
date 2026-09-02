@@ -583,19 +583,29 @@ def _resume_approval_dict(data: HITLResponsePayload) -> Dict[str, Any]:
     }
 
 
-def _resolve_hitl_session_id(data: HITLResponsePayload, client_id: str) -> str:
-    """Which paused graph a ``client_hitl_response`` resumes (DEBT-188).
+def _resolve_target_session_id(session_id: Optional[str], client_id: str) -> str:
+    """Which session an inbound WS event addresses (DEBT-188).
 
     ``client_id`` is the WS connection's own identity (the route's path
     param) — several sessions can share one connection at once
-    (``register_alias``, ``RegisterSessionPayload``). The paused graph is
-    keyed by the chat's own ``session_id``, not the connection, so route by
-    the reply's own ``session_id`` when the frontend supplies one, falling
-    back to ``client_id`` only for a stale/un-reloaded webview that predates
-    this field. Using the bare connection id when more than one session
-    shares it silently resumes the wrong session — or none at all.
+    (``register_alias``, ``RegisterSessionPayload``). Session-scoped state —
+    the paused graph a reply resumes, the runner an abort cancels — is keyed
+    by the chat's own ``session_id``, not the connection, so route by the
+    payload's own ``session_id`` when the frontend supplies one, falling back
+    to ``client_id`` only for a stale/un-reloaded webview that predates the
+    field. Using the bare connection id when more than one session shares it
+    silently targets the wrong session — or none at all.
+
+    Takes the id rather than a payload so every event type carrying one
+    resolves through this single rule instead of a per-handler copy.
     """
-    return data.session_id or client_id
+    return session_id or client_id
+
+
+def _resolve_hitl_session_id(data: HITLResponsePayload, client_id: str) -> str:
+    """Which paused graph a ``client_hitl_response`` resumes — see
+    :func:`_resolve_target_session_id` for the rule this applies."""
+    return _resolve_target_session_id(data.session_id, client_id)
 
 
 # Manual Dreaming — at most one consolidation per project (a new run cancels the
@@ -1745,13 +1755,22 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # Signal the live terminal first so the foreground process gets a
                 # Ctrl-C immediately, then cancel the runner task. Best-effort: a
                 # session-less abort just skips this.
-                await task_service.interrupt_session(client_id)
-                _did_abort = task_service.abort_session(client_id)
+                # Route by the payload's own session_id (DEBT-188's rule): the
+                # runner is registered under the submit's session id, never the
+                # connection id, and one connection multiplexes many sessions —
+                # so cancelling by client_id missed every time, and the ack was
+                # stamped with an id no panel listens on (the client demuxes by
+                # data.session_id), leaving Stop spinning even when it worked.
+                _abort_sid = _resolve_target_session_id(
+                    valid_event.data.session_id, client_id
+                )
+                await task_service.interrupt_session(_abort_sid)
+                _did_abort = task_service.abort_session(_abort_sid)
                 # ACK so the UI never leaves the Stop button frozen: signalled=False
                 # tells the client no live task existed (already done / never ran).
-                await vfs_manager.broadcast_abort_ack(client_id, _did_abort)
+                await vfs_manager.broadcast_abort_ack(_abort_sid, _did_abort)
                 logger.info(
-                    "[Session: %s] Abort mesh: signalled=%s", client_id, _did_abort,
+                    "[Session: %s] Abort mesh: signalled=%s", _abort_sid, _did_abort,
                 )
 
             elif valid_event.event_type == "client_pty_write":

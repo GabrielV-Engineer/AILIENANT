@@ -219,20 +219,57 @@ export class APIClient {
      * failure here means the backend is genuinely unreachable, which is
      * itself the answer (signalled: false), not a caller-facing error.
      */
-    public async abortTaskViaHttp(taskId: string): Promise<{ signalled: boolean }> {
+    /**
+     * The backend's own view of a task's lifecycle (`running` / `completed` /
+     * `aborted` / `unknown`), read from the in-flight registry then the
+     * checkpoint chain. A pure read, safe to call on every panel reveal.
+     *
+     * Exists because the webview's own turn state is memory-only and dies with
+     * the JS context on every tab switch; host memory was the only survivor, and
+     * a stale entry there made a live turn look finished (or vice versa). Never
+     * throws: a backend that cannot answer leaves the caller on its existing
+     * behaviour rather than blocking the reveal.
+     */
+    public async getTaskStatus(taskId: string): Promise<{ status: string } | null> {
+        try {
+            const response = await fetch(`${this._baseUrl}/task/${taskId}/status`, {
+                headers: { ...this._authHeaders() },
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!response.ok) { return null; }
+            const data = await response.json();
+            return typeof data?.status === 'string' ? { status: data.status } : null;
+        } catch {
+            return null;
+        }
+    }
+
+    public async abortTaskViaHttp(taskId: string): Promise<{ signalled: boolean; reachable: boolean }> {
         try {
             const response = await fetch(`${this._baseUrl}/task/${taskId}/abort`, {
                 method: 'POST',
                 headers: { ...this._authHeaders() },
                 signal: AbortSignal.timeout(5000),
             });
+            // `reachable` separates outcomes this used to collapse into one
+            // boolean: the backend answered "no live task" (reachable, not
+            // signalled) versus it could not be reached at all. Only the latter
+            // is a connectivity problem, and reporting the first as one sent the
+            // user to debug a network fault that never existed. A non-OK status
+            // or an unparseable body still means the backend ANSWERED — the
+            // request reached it, so the fault is not the network.
             if (!response.ok) {
-                return { signalled: false };
+                return { signalled: false, reachable: true };
             }
-            const data = await response.json();
-            return { signalled: Boolean(data?.signalled) };
+            try {
+                const data = await response.json();
+                return { signalled: Boolean(data?.signalled), reachable: true };
+            } catch {
+                return { signalled: false, reachable: true };
+            }
         } catch {
-            return { signalled: false };
+            // Transport-level failure: no response at all.
+            return { signalled: false, reachable: false };
         }
     }
 

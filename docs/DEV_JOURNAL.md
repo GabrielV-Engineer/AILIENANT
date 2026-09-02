@@ -13,6 +13,15 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.24: Delivery Integrity — A Turn the UI Can Actually See — 2026-09-01
+**Status:** COMPLETE | **Gates:** mypy 0 · pytest 3442 passed/2 skipped · ruff 0 · tsc 0 · npm test 345 passed · npm lint 0 errors
+- Shipped: a Plan-mode turn that ran to completion while the UI showed only the user's own prompt, and a Stop that reported "backend unreachable" against a backend answering in under a millisecond. `send_personal_message` discarded every event for a session whose alias had been reaped — silently, and *before* the telemetry mirror, so nothing was left to diagnose from. It now logs and records the drop, and re-aliases onto the sole live connection when the destination is unambiguous. Alongside: abort routes by the payload's `session_id` instead of the connection id, Stop distinguishes "no live task" from "backend unreachable", a reveal reconciles its turn against `/task/{id}/status`, the grill fails over on a provider refusal, and a mute local `ainvoke` raises instead of hanging.
+- Key decision: recover, never guess. With exactly one physical connection live the destination is unambiguous, so the alias is restored through `register_alias` — a bespoke `active_connections` write would leak an entry `disconnect` never reaps. With zero or several sockets the event still drops, but loudly: delivering another window's private turn is worse than not delivering it.
+- Key decision: the investigation's first four hypotheses were wrong and are recorded as such. The `ThinkingTagDemuxer` swallow, the `enable_native_thinking` gate, `_guarded`'s missing telemetry and `tier_for_alias` were each tested and disproved; the observability gap in the drop path is precisely what made them unfalsifiable from the log. The fix that mattered was making the failure visible, not any of them.
+- Deferred: DEBT-201 — the routing gate still prompts on a single-model preset; it fires downstream of where this turn died and its stale-cache hazard deserves its own slice.
+
+---
+
 ## 8.17.0: Core Host Lifecycle — Adopt a Running Core, Unhang Restart — 2026-09-01
 **Status:** COMPLETE | **Gates:** tsc 0 · npm lint 0 errors/23 pre-existing advisory warnings · npm test 344 passed · npm compile 0
 - Shipped: the extension stopped duplicating a Core it should have joined. `activate()` minted a fresh port and token every time and never asked whether one was already serving, so a backend surviving a previous host kept its port while the new one was addressed elsewhere — measured live at HTTP 200 + WS `101` on the published port while the UI read "disconnected". It now reads `~/.ailienant/run.json`, probes liveness, and adopts; `stop()` kills the process tree under a bounded wait, `start()` proves readiness before claiming it, `_ensureBackend` reports an exhausted budget instead of returning silently, and `ailienant.restartCore` reaches the Command Palette.

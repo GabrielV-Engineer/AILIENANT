@@ -425,3 +425,87 @@ async def test_broadcast_byom_config_applied_carries_the_watchdog_pairing() -> N
     sent_json = fake_ws.send_text.await_args.args[0]
     assert '"stream_watchdog_ms":180000' in sent_json
     assert '"stream_watchdog_is_local":true' in sent_json
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. Session-scoped routing — the seam every test above skips
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# The tests above call `abort_session`/`broadcast_abort_ack` directly with a
+# literal id, so they pass whatever id the WS handler actually resolves. That
+# blind spot is why the handler could cancel by connection id — never matching
+# the id the runner is registered under — under a fully green suite.
+
+
+async def test_abort_resolves_the_payload_session_not_the_connection() -> None:
+    """One socket multiplexes many sessions, so the connection id identifies the
+    SOCKET, never the turn. Routing by it cancels nothing and acks an id no
+    panel listens on, leaving Stop spinning over a task that keeps running."""
+    from main import _resolve_target_session_id
+
+    assert _resolve_target_session_id("sess-real", "conn-abc") == "sess-real"
+    # Only a payload with no session id at all falls back to the connection —
+    # a pre-field webview, not the common path.
+    assert _resolve_target_session_id(None, "conn-abc") == "conn-abc"
+    assert _resolve_target_session_id("", "conn-abc") == "conn-abc"
+
+
+async def test_undeliverable_event_is_reported_and_not_silently_dropped() -> None:
+    """A dropped event is a user-visible hang with no other symptom. Silence
+    here is the defect: with no live socket to adopt, the drop must still be
+    observable rather than vanishing before the telemetry mirror."""
+    from api.websocket_manager import ConnectionManager
+    from api.ws_contracts import AbortAckPayload, ServerAbortAckEvent
+
+    mgr = ConnectionManager()  # no connections at all
+    with patch("api.websocket_manager.log_ws_payload") as spy:
+        await mgr.send_personal_message(
+            "sess-orphaned",
+            ServerAbortAckEvent(data=AbortAckPayload(session_id="sess-orphaned", signalled=True)),
+        )
+    spy.assert_called_once()
+    assert spy.call_args.args[0] == "drop"
+
+
+async def test_orphaned_session_is_re_aliased_onto_the_only_live_socket() -> None:
+    """A socket close reaps every alias it owned while the graph keeps emitting.
+    With exactly one connection live the destination is unambiguous, so the
+    alias the handshake would have created is restored and the event delivered
+    — rather than the turn going dark for the rest of its run."""
+    from api.websocket_manager import ConnectionManager
+    from api.ws_contracts import AbortAckPayload, ServerAbortAckEvent
+
+    mgr = ConnectionManager()
+    fake_ws = AsyncMock()
+    mgr.active_connections["conn-only"] = fake_ws
+
+    await mgr.send_personal_message(
+        "sess-reaped",
+        ServerAbortAckEvent(data=AbortAckPayload(session_id="sess-reaped", signalled=True)),
+    )
+
+    fake_ws.send_text.assert_awaited_once()
+    # Registered through register_alias, so disconnect still reaps it — a bespoke
+    # active_connections write would leak an entry nothing cleans up.
+    assert "sess-reaped" in mgr._aliases.get("conn-only", set())
+
+
+async def test_ambiguous_routing_drops_rather_than_guessing_a_socket() -> None:
+    """Two windows open means two candidate sockets and no way to tell which
+    owns the session. Guessing would deliver another window's private turn, so
+    the event is dropped — loudly — instead."""
+    from api.websocket_manager import ConnectionManager
+    from api.ws_contracts import AbortAckPayload, ServerAbortAckEvent
+
+    mgr = ConnectionManager()
+    ws_a, ws_b = AsyncMock(), AsyncMock()
+    mgr.active_connections["conn-a"] = ws_a
+    mgr.active_connections["conn-b"] = ws_b
+
+    await mgr.send_personal_message(
+        "sess-ambiguous",
+        ServerAbortAckEvent(data=AbortAckPayload(session_id="sess-ambiguous", signalled=True)),
+    )
+
+    ws_a.send_text.assert_not_awaited()
+    ws_b.send_text.assert_not_awaited()

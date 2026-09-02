@@ -137,13 +137,23 @@ export function useWSMessageHandler(): void {
                     }
                     break;
                 case 'server_abort_ack': {
-                    const d = msg.payload as { signalled?: boolean };
+                    const d = msg.payload as { signalled?: boolean; reachable?: boolean };
                     if (!d?.signalled) {
-                        // No live task was cancelled (socket down, or it already
-                        // finished). Clear the optimistic flag so Stop doesn't stay
-                        // frozen, and surface the failure.
+                        // No live task was cancelled. Clear the optimistic flag so
+                        // Stop doesn't stay frozen, then name the ACTUAL outcome:
+                        // an ack that arrived (over WS, or an HTTP 200) means the
+                        // backend answered and had no running task — the turn was
+                        // already over. Only a transport failure is a connectivity
+                        // problem. Reporting the first as the second sent the user
+                        // to debug a network fault that did not exist.
                         ws.setIsAborting(false);
-                        cs.addToast('error', 'Stop failed — backend unreachable. The task may still be running.');
+                        const unreachable = d?.reachable === false;
+                        cs.addToast(
+                            unreachable ? 'error' : 'info',
+                            unreachable
+                                ? 'Stop failed — the backend did not respond. The task may still be running.'
+                                : 'Nothing to stop — this turn had already finished.',
+                        );
                     }
                     break;
                 }

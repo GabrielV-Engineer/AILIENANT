@@ -1064,7 +1064,31 @@ class LLMGateway:
             # calibration below with an unrelated wait.
             _call_started = time.monotonic()
             try:
-                response: ModelResponse = cast(ModelResponse, await litellm.acompletion(**kwargs))
+                # A non-streaming call yields nothing until it completes, so the
+                # per-chunk idle watchdog the streaming paths use has nothing to
+                # observe here. `timeout=` is passed to litellm above, but a local
+                # engine that accepts the socket and then goes mute has been seen
+                # to outlive it, leaving the turn hung with no ceiling of our own.
+                # wait_for is that ceiling, and it is ours to enforce.
+                response: ModelResponse = cast(
+                    ModelResponse,
+                    await asyncio.wait_for(
+                        litellm.acompletion(**kwargs), timeout=_effective_timeout,
+                    ),
+                )
+            except asyncio.TimeoutError as exc:
+                # Named as the stall it is, not as a generic cancellation: the
+                # caller's degrade path keys on the exception type to tell an
+                # engine that never answered from one that answered unusably.
+                logger.error(
+                    "LLM ainvoke exceeded its %.0fs budget with no response "
+                    "[model=%s trace=%s] — treating as a stalled engine.",
+                    _effective_timeout, kwargs.get("model"), trace_id,
+                )
+                raise LocalStreamStalledError(
+                    f"{kwargs.get('model')} produced no response within "
+                    f"{_effective_timeout:.0f}s"
+                ) from exc
             except ContextWindowExceededError:
                 # Context window exhausted → OOM cascade to a cloud fallback model.
                 return await _oom_cascade(

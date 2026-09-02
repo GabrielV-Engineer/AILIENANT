@@ -389,9 +389,54 @@ class ConnectionManager:
     # Low-level send
     # ------------------------------------------------------------------
 
+    def _recover_alias(self, session_id: str) -> bool:
+        """Re-alias ``session_id`` onto the sole live connection, if there is one.
+
+        A socket close reaps every alias it owned (see :meth:`disconnect`), but a
+        graph mid-turn keeps emitting for a session that no longer routes — and
+        nothing on the client knows to re-announce until it reconnects. When
+        exactly one connection is live the destination is unambiguous, so the
+        alias the handshake would have created is restored here rather than
+        letting the event vanish.
+
+        Never invents a connection: with none, or with several and no way to tell
+        which owns the session, this reports failure and the caller drops the
+        event loudly. Re-registration goes through :meth:`register_alias` so
+        ``_aliases`` stays consistent and ``disconnect`` still reaps it.
+        """
+        # `active_connections` holds physical connection ids AND the session ids
+        # aliased onto them; only the former are real sockets to adopt.
+        aliased: Set[str] = set()
+        for owned in self._aliases.values():
+            aliased |= owned
+        live = [cid for cid in self.active_connections if cid not in aliased]
+        if len(live) != 1:
+            return False
+        self.register_alias(session_id, live[0])
+        return True
+
     async def send_personal_message(self, client_id: str, event: WebSocketMessage) -> None:
         if client_id not in self.active_connections:
-            return
+            _event_type = getattr(event, "event_type", "?")
+            recovered = self._recover_alias(client_id)
+            if not recovered:
+                # Loud by necessity: an undelivered card or activity marker is a
+                # user-visible hang with no other symptom, and the telemetry
+                # mirror below this early return never sees it — which is exactly
+                # what made this class of failure undiagnosable from the log.
+                logger.warning(
+                    "⚠️ WS event DROPPED — no route for id=%s event=%s "
+                    "(live connections: %d). The session's alias is gone; the UI "
+                    "will not see this event.",
+                    client_id, _event_type, len(self.active_connections),
+                )
+                log_ws_payload("drop", str(_event_type), client_id, "no route for id")
+                return
+            logger.warning(
+                "WS event for id=%s had no route; re-aliased onto the sole live "
+                "connection and delivered (event=%s).",
+                client_id, _event_type,
+            )
         # Multiplexing: one physical socket carries every session's traffic, so
         # the client demultiplexes by data.session_id. Stamp the routing id (the
         # client_id this event is addressed to) into the payload here — the single
