@@ -127,20 +127,21 @@ async function main() {
 	}
 }
 
-// The end-user guides live at the repository root, one level above the packaged
-// extension folder, so `vsce` cannot see them. Copy them into dist/docs/ (which
+// The end-user guides live outside the packaged extension folder (repo-relative
+// paths below), so `vsce` cannot see them. Copy them into dist/docs/ (which
 // .vscodeignore does not exclude) so the Support → Help documents action works
 // offline in a published VSIX. Missing sources are skipped, never fatal: a
 // partial checkout must not break the build, and docsCatalog.ts probes for
 // existence before offering an entry.
-const USER_GUIDES = ['README.md', 'HowToUseIt.md', 'HowItWorks.md'];
+const USER_GUIDES = ['README.md', 'docs/guides/HowToUseIt.md', 'docs/guides/HowItWorks.md'];
 function copyUserGuides() {
 	const outDir = path.join('dist', 'docs');
 	fs.mkdirSync(outDir, { recursive: true });
-	for (const name of USER_GUIDES) {
-		const src = path.join('..', name);
+	for (const guide of USER_GUIDES) {
+		const src = path.join('..', guide);
 		if (fs.existsSync(src)) {
-			fs.copyFileSync(src, path.join(outDir, name));
+			// Flattened by basename: docsCatalog.ts looks guides up by file name.
+			fs.copyFileSync(src, path.join(outDir, path.basename(guide)));
 		} else {
 			console.warn(`[docs] skipped missing user guide: ${src}`);
 		}

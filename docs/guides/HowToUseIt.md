@@ -2,7 +2,7 @@
 
 A complete, step-by-step guide to installing, configuring, and working with AILIENANT — from a clean machine to your first finished task and beyond.
 
-> New here? Read the [README](README.md) for the big picture first. Want to understand the machinery? See [HowItWorks.md](HowItWorks.md).
+> New here? Read the [README](../../README.md) for the big picture first. Want to understand the machinery? See [HowItWorks.md](HowItWorks.md).
 
 ---
 
@@ -283,4 +283,4 @@ Lower `AILIENANT_MAX_BUDGET_USD`, switch the profile to **Medium**/**Big** to st
 
 ---
 
-*Still stuck? Open an issue — and if you'd like to help improve this guide, see [CONTRIBUTING.md](CONTRIBUTING.md).*
+*Still stuck? Open an issue — and if you'd like to help improve this guide, see [CONTRIBUTING.md](../../CONTRIBUTING.md).*

@@ -1,14 +1,14 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
 
-<img src="assets/icon-color.svg" alt="AILIENANT" width="340" />
+<img src="../../assets/icon-color.svg" alt="AILIENANT" width="340" />
 
 <h1>AILIENANT</h1>
 
 <p><strong>先规划、后编码的 AI 编程搭档——在你的机器上、用你的模型、按你的规则运行。</strong></p>
 
 <p>
-  <a href="README.md">English</a> ·
+  <a href="../../README.md">English</a> ·
   <a href="README.es.md">Español</a> ·
   <a href="README.fr.md">Français</a> ·
   <strong>中文</strong> ·
@@ -18,7 +18,7 @@
 </p>
 
 <p>
-  <a href="LICENSE"><img alt="许可证: AGPL-3.0" src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg"></a>
+  <a href="../../LICENSE"><img alt="许可证: AGPL-3.0" src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white">
   <img alt="VS Code" src="https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visualstudiocode&logoColor=white">
@@ -69,7 +69,7 @@
 | 沙箱执行 | ✅ Docker / Wasm / 需审批 | ⚠️ 常在宿主机上 |
 | 供应商锁定 | ✅ 无——自由切换 | ❌ 绑定单一 |
 
-更完整的技术对比见 **[HowItWorks.md](HowItWorks.md)**。
+更完整的技术对比见 **[HowItWorks.md](../guides/HowItWorks.md)**。
 
 ---
 
@@ -87,7 +87,7 @@ AILIENANT 并非单一模型包揽一切——而是一个由专职成员组成�
 
 编码器会专化为每个任务所需的角色：**core-dev、架构/重构、devops/基础设施、secops、qa-测试、文档管理、版本控制、数据/ML 工程师**——各自拥有专属工具、护栏与审批触发器（例如，对 `.env` 的编辑始终会暂停等待你确认）。
 
-当某一步失败时，**自愈**循环会读取错误并在放弃前提出修正补丁；对于开放式步骤，一个有界的 **ReAct 单元**会针对实时终端工作直至完成。完整的按智能体拆解见 **[HowItWorks.md](HowItWorks.md)**。
+当某一步失败时，**自愈**循环会读取错误并在放弃前提出修正补丁；对于开放式步骤，一个有界的 **ReAct 单元**会针对实时终端工作直至完成。完整的按智能体拆解见 **[HowItWorks.md](../guides/HowItWorks.md)**。
 
 ---
 
@@ -105,7 +105,7 @@ AILIENANT 假定自主智能体迟早会尝试做它不该做的事——并据�
 
 ## 快速开始
 
-> 完整指南：**[HowToUseIt.md](HowToUseIt.md)**
+> 完整指南：**[HowToUseIt.md](../guides/HowToUseIt.md)**
 
 **前置条件：** Python 3.10+（推荐 3.13）、Node.js 20+、VS Code 1.85+，以及至少一个模型来源（本地的 Ollama/LM Studio 安装、一个 [LiteLLM](https://docs.litellm.ai/docs/simple_proxy) 代理，或云端 API 密钥）。
 
@@ -146,7 +146,7 @@ npm run compile
 
 **失败被路由，而不会导致崩溃。** 每个代理轮次都运行在结构化执行挽具内：`reflexion_guard` 拦截异常并将其路由到专用的修复代理（而非显示堆栈追踪），确定性的 `finops_gate` 在图的每一步强制执行你的成本上限，结构化裁决——而非原始 stdout——驱动所有重试决策。若某个节点出现未处理的异常，会在错误传播前写入死信队列，让你能够检查并恢复。
 
-深入版本——图示、完整的规格模式以及修复路由逻辑——见 **[HowItWorks.md](HowItWorks.md)**。
+深入版本——图示、完整的规格模式以及修复路由逻辑——见 **[HowItWorks.md](../guides/HowItWorks.md)**。
 
 ---
 
@@ -170,7 +170,7 @@ AILIENANT 对你代码库的理解并非黑箱。内置**控制面板**将 Graph
 
 - **🧩 MCP 服务器。** AILIENANT 使用 **Model Context Protocol**，并附带一个经过甄选的可信服务器注册表（GitHub、Brave Search、Docker、Postgres），可一键启用。每个 MCP 工具都会**按权限分级**——未知者被视为危险，直到被证明安全——并且只有在你批准后才在该会话内被信任。
 - **⚡ Skills。** 保存可复用的指令片段——全局或按工作区——并将其插入任意提示词。这是你自己的命令模板，随项目一同版本化。
-- **🧰 工具。** 智能体通过一个带类型、按角色门控的工具注册表来行动：读取和追踪代码、以事务方式编辑文件、在沙箱中运行命令，并在不确定时询问你。该目录正**朝着约 56 个按角色分配的工具增长**（路线图见 **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)**）；完整表格——哪个智能体使用哪个工具——见 **[HowItWorks.md](HowItWorks.md)**。
+- **🧰 工具。** 智能体通过一个带类型、按角色门控的工具注册表来行动：读取和追踪代码、以事务方式编辑文件、在沙箱中运行命令，并在不确定时询问你。该目录正**朝着约 56 个按角色分配的工具增长**（路线图见 **[docs/PROJECT_MANIFEST.md](../PROJECT_MANIFEST.md)**）；完整表格——哪个智能体使用哪个工具——见 **[HowItWorks.md](../guides/HowItWorks.md)**。
 
 ---
 
@@ -189,7 +189,7 @@ AILIENANT 对你代码库的理解并非黑箱。内置**控制面板**将 Graph
 | **Cloud** | 顶级推理质量，受 token 限额约束 | 1 个任务 · 5 个文件 · token 封顶 |
 | **Hybrid** | 云端*思考*、本地模型*编辑*——以更低成本换质量 | 2 个任务 · 6 个文件 |
 
-完整机制——每个配置档究竟能达成什么、时间区间，以及离线树搜索（MCTS）如何校验候选改动——见 **[HowItWorks.md](HowItWorks.md)**。
+完整机制——每个配置档究竟能达成什么、时间区间，以及离线树搜索（MCTS）如何校验候选改动——见 **[HowItWorks.md](../guides/HowItWorks.md)**。
 
 ---
 
@@ -203,19 +203,19 @@ AILIENANT 对你代码库的理解并非黑箱。内置**控制面板**将 Graph
 
 | 文档 | 面向谁 |
 | --- | --- |
-| **[HowToUseIt.md](HowToUseIt.md)** | 所有人——逐步安装、配置并运行你的第一个任务 |
-| **[HowItWorks.md](HowItWorks.md)** | 好奇者——架构、路由与安全模型解析 |
-| **[DEVELOPERS.md](DEVELOPERS.md)** | 核心开发者——深入内部、图示、伪代码、代码地图 |
-| **[CONTRIBUTING.md](CONTRIBUTING.md)** | 贡献者——环境搭建、规范与如何提交一个出色的 PR |
-| **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)** | 逐阶段的完整路线图 |
+| **[HowToUseIt.md](../guides/HowToUseIt.md)** | 所有人——逐步安装、配置并运行你的第一个任务 |
+| **[HowItWorks.md](../guides/HowItWorks.md)** | 好奇者——架构、路由与安全模型解析 |
+| **[DEVELOPERS.md](../../DEVELOPERS.md)** | 核心开发者——深入内部、图示、伪代码、代码地图 |
+| **[CONTRIBUTING.md](../../CONTRIBUTING.md)** | 贡献者——环境搭建、规范与如何提交一个出色的 PR |
+| **[docs/PROJECT_MANIFEST.md](../PROJECT_MANIFEST.md)** | 逐阶段的完整路线图 |
 
 ---
 
 ## 参与贡献
 
-AILIENANT 是开源项目，欢迎贡献——从修正错别字到完成路线图条目。请先阅读 **[CONTRIBUTING.md](CONTRIBUTING.md)**。
+AILIENANT 是开源项目，欢迎贡献——从修正错别字到完成路线图条目。请先阅读 **[CONTRIBUTING.md](../../CONTRIBUTING.md)**。
 
-需要先了解一点：由于项目采用双重许可（见下文），每位贡献者在其首个 PR 被合并前都需签署一份简短的 **[贡献者许可协议（CLA）](CLA.md)**。这是一次性步骤，你仍保留对自己作品的版权。
+需要先了解一点：由于项目采用双重许可（见下文），每位贡献者在其首个 PR 被合并前都需签署一份简短的 **[贡献者许可协议（CLA）](../legal/CLA.md)**。这是一次性步骤，你仍保留对自己作品的版权。
 
 ---
 
@@ -223,10 +223,10 @@ AILIENANT 是开源项目，欢迎贡献——从修正错别字到完成路线�
 
 AILIENANT 采用**开放核心（open-core）与双重许可**：
 
-- **社区版——[GNU AGPL-3.0](LICENSE)。** 可自由使用、研究、修改和分享。如果你分发它，或将修改版作为网络服务运行，则需在相同许可下公开你的源代码。
+- **社区版——[GNU AGPL-3.0](../../LICENSE)。** 可自由使用、研究、修改和分享。如果你分发它，或将修改版作为网络服务运行，则需在相同许可下公开你的源代码。
 - **商业 / 企业版。** 面向无法接受 AGPL 条款，或需要企业功能与支持的组织。
 
-完整说明以及如何获取商业许可，请参见 **[LICENSING.md](LICENSING.md)**。
+完整说明以及如何获取商业许可，请参见 **[LICENSING.md](../legal/LICENSING.md)**。
 
 > **AILIENANT** 名称及其标识为本项目的商标，不在 AGPL 覆盖范围内。
 

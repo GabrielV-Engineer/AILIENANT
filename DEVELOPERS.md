@@ -1,6 +1,6 @@
 # AILIENANT — Developer Guide (Internal)
 
-> **Audience:** core contributors working *on* AILIENANT. This is the deep technical reference — architecture, the execution graph, subsystem internals, pseudocode for the load-bearing paths, the security model, and an honest map of what is and isn't built. If you're a *user*, start with [HowToUseIt.md](HowToUseIt.md); for a gentle architectural tour, see [HowItWorks.md](HowItWorks.md).
+> **Audience:** core contributors working *on* AILIENANT. This is the deep technical reference — architecture, the execution graph, subsystem internals, pseudocode for the load-bearing paths, the security model, and an honest map of what is and isn't built. If you're a *user*, start with [HowToUseIt.md](docs/guides/HowToUseIt.md); for a gentle architectural tour, see [HowItWorks.md](docs/guides/HowItWorks.md).
 >
 > **Source of truth for status & roadmap:** [docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md) and [docs/DEV_JOURNAL.md](docs/DEV_JOURNAL.md) (Phase 8.x active log) / [docs/DEV_JOURNAL_ARCHIVE.md](docs/DEV_JOURNAL_ARCHIVE.md) (Phase 0–7.19 history). Where this guide and those disagree, they win. Architectural contracts live in the `docs/PHASE_*_BLUEPRINT.md` files and `docs/SCHEMA_EVOLUTION.MD`.
 
@@ -272,6 +272,7 @@ Proyect_Ailienant/
 │   │                            #     + nightly Playwright e2e)
 │   ├── ISSUE_TEMPLATE/          #   bug_report.md · feature_request.md
 │   ├── PULL_REQUEST_TEMPLATE.md
+│   ├── CODEOWNERS               #   review routing
 │   └── dependabot.yml           #   pip (ailienant-core) · npm (ailienant-extension, root) · github-actions
 ├── scripts/
 │   └── pre_commit_backend_gate.py # venv-resolving entry point for the ruff/mypy pre-commit hooks
@@ -282,7 +283,7 @@ Proyect_Ailienant/
 │                               #   NOT a migration of docs/PROJECT_MANIFEST.md; new-phases-only, Phase 13+;
 │                               #   see CLAUDE.md §15). config.yaml (project context) · changes/ (per-change
 │                               #   proposal/spec-delta/design/tasks folders) · specs/ (archived baseline)
-├── SECURITY.md · CODEOWNERS     # Vulnerability disclosure path + review routing
+├── SECURITY.md                  # Vulnerability disclosure path
 ├── ailienant-core/              # Python orchestration engine
 │   ├── pytest.ini · mypy.ini    #   gate config: unit/integration/e2e markers · typing scope
 │   ├── ruff.toml · conftest.py  #   lint rules · shared autouse fixtures (cache/singleton resets)
@@ -453,13 +454,16 @@ Proyect_Ailienant/
 │   ├── playwright.config.ts     #   Chromium-only smoke config for e2e/ (separate from the tsc/eslint compile gate)
 │   └── esbuild.js               #   3 build contexts (extension CJS · webview IIFE · dashboard ESM) + user-guide copy
 ├── docs/                        # Manifest, blueprints, dev journal, schema, system prompts, tech debt,
-│                                #   DEBUGGING_RUNBOOK.md (install-triage map: exec-log ring, Glass-Box
-│                                #   Timeline, audit chain, telemetry tables)
-├── README.md  (+ 6 translations)# Public landing page
-├── HowToUseIt.md · HowItWorks.md# User & architecture guides
+│   │                            #   DEBUGGING_RUNBOOK.md (install-triage map: exec-log ring, Glass-Box
+│   │                            #   Timeline, audit chain, telemetry tables)
+│   ├── guides/                  #   HowToUseIt.md · HowItWorks.md (user & architecture guides; bundled
+│   │                            #     into the VSIX and indexed by core/memory/docs_index.py)
+│   ├── i18n/                    #   README translations (es · fr · hi · it · ru · zh)
+│   └── legal/                   #   CLA.md · LICENSING.md (contributor agreement + dual-license explainer)
+├── README.md                    # Public landing page
 ├── DEVELOPERS.md                # This document
-├── CONTRIBUTING.md · CLA.md     # Contribution guide + CLA
-├── LICENSE · LICENSING.md       # AGPL-3.0 + dual-license explainer
+├── CONTRIBUTING.md              # Contribution guide
+├── LICENSE                      # AGPL-3.0
 └── CLAUDE.md · AGENTS.md        # Coding standards, architectural guardrails, and build protocols
 ```
 

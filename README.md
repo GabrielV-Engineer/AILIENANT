@@ -9,12 +9,12 @@
 
 <p>
   <strong>English</strong> ·
-  <a href="README.es.md">Español</a> ·
-  <a href="README.fr.md">Français</a> ·
-  <a href="README.zh.md">中文</a> ·
-  <a href="README.hi.md">हिन्दी</a> ·
-  <a href="README.ru.md">Русский</a> ·
-  <a href="README.it.md">Italiano</a>
+  <a href="docs/i18n/README.es.md">Español</a> ·
+  <a href="docs/i18n/README.fr.md">Français</a> ·
+  <a href="docs/i18n/README.zh.md">中文</a> ·
+  <a href="docs/i18n/README.hi.md">हिन्दी</a> ·
+  <a href="docs/i18n/README.ru.md">Русский</a> ·
+  <a href="docs/i18n/README.it.md">Italiano</a>
 </p>
 
 <p>
@@ -74,7 +74,7 @@ Everything is integrated in an easy-to-use way, but without being a "black box."
 | Sandboxed execution | ✅ Docker / Wasm / approval-gated | ⚠️ Often runs on host |
 | Vendor lock-in | ✅ None — swap providers freely | ❌ Locked to one |
 
-A fuller technical comparison lives in **[HowItWorks.md](HowItWorks.md)**.
+A fuller technical comparison lives in **[HowItWorks.md](docs/guides/HowItWorks.md)**.
 
 ---
 
@@ -92,7 +92,7 @@ AILIENANT isn't one model doing everything — it's a small team of specialists,
 
 The Coder specializes into the role each task needs: **core-dev, architect/refactor, devops/infra, secops, qa-tester, doc-manager, vcs-manager, data/ML engineer** — each with its own tools, guardrails, and approval triggers (e.g. a `.env` edit always pauses for you).
 
-When a step fails, a **self-healing** loop reads the error and proposes a corrected patch before giving up; for open-ended steps, a bounded **ReAct cell** works against a live terminal until the job is done. The full per-agent breakdown is in **[HowItWorks.md](HowItWorks.md)**.
+When a step fails, a **self-healing** loop reads the error and proposes a corrected patch before giving up; for open-ended steps, a bounded **ReAct cell** works against a live terminal until the job is done. The full per-agent breakdown is in **[HowItWorks.md](docs/guides/HowItWorks.md)**.
 
 ---
 
@@ -110,7 +110,7 @@ AILIENANT assumes that an autonomous agent will eventually try to do something i
 
 ## Quick start
 
-> Full walkthrough: **[HowToUseIt.md](HowToUseIt.md)**
+> Full walkthrough: **[HowToUseIt.md](docs/guides/HowToUseIt.md)**
 
 **Prerequisites:** Python 3.10+ (3.13 recommended), Node.js 20+, VS Code 1.85+, and at least one model source (a local Ollama/LM Studio install, a [LiteLLM](https://docs.litellm.ai/docs/simple_proxy) proxy, or cloud API keys).
 
@@ -151,7 +151,7 @@ It retrieves the right files with **GraphRAG**: instead of dumping whole files i
 
 **Failures route, they don't crash.** Every agent turn runs inside a structured execution harness: a `reflexion_guard` intercepts exceptions and routes them to a dedicated repair agent (instead of surfacing a traceback), a deterministic `finops_gate` enforces your cost ceiling on every graph step, and structured verdicts — not raw stdout — drive all retry decisions. If a node has an unhandled exception it's written to a dead-letter queue before the error propagates, so you can inspect and resume.
 
-The deep version — diagrams, the full spec schema, and the repair routing logic — is in **[HowItWorks.md](HowItWorks.md)**.
+The deep version — diagrams, the full spec schema, and the repair routing logic — is in **[HowItWorks.md](docs/guides/HowItWorks.md)**.
 
 ---
 
@@ -175,7 +175,7 @@ AILIENANT's understanding of your codebase isn't a black box. The built-in **das
 
 - **🧩 MCP servers.** AILIENANT speaks the **Model Context Protocol**, with a curated registry of vetted servers (GitHub, Brave Search, Docker, Postgres) you can enable in a click. Every MCP tool is **privilege-classified** — unknown tools are treated as dangerous until proven safe — and trusted only for the session after you approve them.
 - **⚡ Skills.** Save reusable instruction snippets — global or per-workspace — and drop them into any prompt. Your own command templates, versioned with the project.
-- **🧰 Tools.** Agents act through a typed, role-gated tool registry: reading and tracing code, editing files transactionally, running commands in the sandbox, and asking you when they're unsure. The catalog is **growing toward ~56 role-assigned tools** (see the roadmap in **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)**); the full table — which agent uses which tool — is in **[HowItWorks.md](HowItWorks.md)**.
+- **🧰 Tools.** Agents act through a typed, role-gated tool registry: reading and tracing code, editing files transactionally, running commands in the sandbox, and asking you when they're unsure. The catalog is **growing toward ~56 role-assigned tools** (see the roadmap in **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)**); the full table — which agent uses which tool — is in **[HowItWorks.md](docs/guides/HowItWorks.md)**.
 
 ---
 
@@ -194,7 +194,7 @@ Pick the **profile** that fits the break you're taking — they trade speed, cos
 | **Cloud** | Top-quality reasoning, bounded by tokens | 1 task · 5 files · token-capped |
 | **Hybrid** | Cloud *plans*, local model *edits* — quality at lower cost | 2 tasks · 6 files |
 
-The full mechanism — what each profile can actually achieve, the time envelopes, and how the offline tree-search (MCTS) vets candidate changes — is in **[HowItWorks.md](HowItWorks.md)**.
+The full mechanism — what each profile can actually achieve, the time envelopes, and how the offline tree-search (MCTS) vets candidate changes — is in **[HowItWorks.md](docs/guides/HowItWorks.md)**.
 
 ---
 
@@ -208,8 +208,8 @@ The agent works against a **persistent, interactive terminal** — a real shell 
 
 | Doc | For whom |
 | --- | --- |
-| **[HowToUseIt.md](HowToUseIt.md)** | Anyone — install, configure, and run your first task, step by step |
-| **[HowItWorks.md](HowItWorks.md)** | The curious — architecture, routing, and the safety model explained |
+| **[HowToUseIt.md](docs/guides/HowToUseIt.md)** | Anyone — install, configure, and run your first task, step by step |
+| **[HowItWorks.md](docs/guides/HowItWorks.md)** | The curious — architecture, routing, and the safety model explained |
 | **[DEVELOPERS.md](DEVELOPERS.md)** | Core developers — deep internals, diagrams, pseudocode, code map |
 | **[CONTRIBUTING.md](CONTRIBUTING.md)** | Contributors — setup, standards, and how to send a great PR |
 | **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)** | The full phase-by-phase roadmap |
@@ -222,7 +222,7 @@ The agent works against a **persistent, interactive terminal** — a real shell 
 
 AILIENANT is open source and contributions are welcome — from fixing a typo to closing a roadmap item. Please start with **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
-One thing to know up front: because the project is dual-licensed (see below), every contributor signs a quick **[Contributor License Agreement](CLA.md)** before their first PR is merged. It's a one-time step and you keep the copyright to your work.
+One thing to know up front: because the project is dual-licensed (see below), every contributor signs a quick **[Contributor License Agreement](docs/legal/CLA.md)** before their first PR is merged. It's a one-time step and you keep the copyright to your work.
 
 ---
 
@@ -233,7 +233,7 @@ AILIENANT is **open-core and dual-licensed**:
 - **Community Edition — [GNU AGPL-3.0](LICENSE).** Free to use, study, modify, and share. If you distribute it or run a modified version as a network service, you share your source under the same license.
 - **Commercial / Enterprise Edition.** For organizations that can't accept the AGPL's terms or want enterprise features and support.
 
-See **[LICENSING.md](LICENSING.md)** for the full picture and how to obtain a commercial license.
+See **[LICENSING.md](docs/legal/LICENSING.md)** for the full picture and how to obtain a commercial license.
 
 > The **AILIENANT** name and logos are trademarks of the project and are not covered by the AGPL.
 

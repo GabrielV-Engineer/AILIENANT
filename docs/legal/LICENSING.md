@@ -11,7 +11,7 @@ AILIENANT is **open-core, dual-licensed** software. The same codebase is availab
 
 | | Community Edition | Commercial / Enterprise Edition |
 | --- | --- | --- |
-| **License** | GNU AGPL-3.0 (see [`LICENSE`](LICENSE)) | Commercial license (contact us) |
+| **License** | GNU AGPL-3.0 (see [`LICENSE`](../../LICENSE)) | Commercial license (contact us) |
 | **Price** | Free | Paid |
 | **Who it's for** | Individuals, OSS projects, research, evaluation, and any use you are happy to keep under the AGPL | Companies that cannot accept AGPL obligations, want to ship AILIENANT inside a closed product, or need enterprise features, support, and an indemnity |
 | **Source disclosure** | Required for distribution **and network use** (AGPL §13) | Not required |
@@ -25,7 +25,7 @@ The complete AILIENANT core is licensed under the **GNU Affero General Public Li
 
 This is a deliberate choice. It keeps AILIENANT and every improvement to it open, and it prevents a third party from taking the project closed-source and reselling it as a competing hosted service without contributing back.
 
-If those terms work for you, you need nothing from us — just follow [`LICENSE`](LICENSE).
+If those terms work for you, you need nothing from us — just follow [`LICENSE`](../../LICENSE).
 
 ## 2. Commercial / Enterprise Edition
 
@@ -43,7 +43,7 @@ then you can purchase a **commercial license** that exempts you from the AGPL ob
 
 Because the project holds (or is licensed, via the [CLA](CLA.md), to relicense) the copyright on the whole codebase, it can offer that **same** code under both the AGPL and a commercial license. Outside contributors keep their freedoms under the AGPL; the project keeps the ability to sustain itself commercially. This is the model used by many successful open-core projects.
 
-This is exactly why every external contribution must be covered by the **[Contributor License Agreement](CLA.md)** — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Without it, a single un-relicensable contribution would block the commercial edition for everyone.
+This is exactly why every external contribution must be covered by the **[Contributor License Agreement](CLA.md)** — see [`CONTRIBUTING.md`](../../CONTRIBUTING.md). Without it, a single un-relicensable contribution would block the commercial edition for everyone.
 
 ## 4. Trademarks
 
@@ -51,4 +51,4 @@ The **AILIENANT** name and logos are not licensed under the AGPL. You may not us
 
 ---
 
-*This document is a plain-language summary for convenience and is **not legal advice**. Where this summary and the text of [`LICENSE`](LICENSE) disagree, the `LICENSE` text governs the Community Edition. A definitive commercial agreement governs the Commercial Edition.*
+*This document is a plain-language summary for convenience and is **not legal advice**. Where this summary and the text of [`LICENSE`](../../LICENSE) disagree, the `LICENSE` text governs the Community Edition. A definitive commercial agreement governs the Commercial Edition.*

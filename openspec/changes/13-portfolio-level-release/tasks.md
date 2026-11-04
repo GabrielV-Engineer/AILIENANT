@@ -15,7 +15,7 @@
 
 - [ ] 3.1 Produce architecture diagrams reflecting the actual shipped components and data flow
 - [ ] 3.2 Update `README.md` with the finalized diagrams
-- [ ] 3.3 Propagate the update to tracked translations (`README.es.md`, `README.fr.md`, `README.hi.md`, `README.it.md`, `README.ru.md`)
+- [ ] 3.3 Propagate the update to tracked translations (`docs/i18n/README.{es,fr,hi,it,ru}.md`)
 
 ## 4. Autonomous Demo (13.4)
 

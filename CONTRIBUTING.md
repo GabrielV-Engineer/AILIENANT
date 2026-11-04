@@ -2,17 +2,17 @@
 
 Thanks for your interest in improving AILIENANT! Contributions of every size are welcome — fixing a typo, sharpening the docs, closing a roadmap item, or hardening a subsystem. This guide gets you set up and explains the standards a pull request needs to meet.
 
-> **Before anything else:** every contributor signs a one-time **[Contributor License Agreement (CLA)](CLA.md)**. See [§1](#1-sign-the-cla-required) — it's quick, and it's what keeps AILIENANT both open and sustainable.
+> **Before anything else:** every contributor signs a one-time **[Contributor License Agreement (CLA)](docs/legal/CLA.md)**. See [§1](#1-sign-the-cla-required) — it's quick, and it's what keeps AILIENANT both open and sustainable.
 
 ---
 
 ## 1. Sign the CLA (required)
 
-AILIENANT is **dual-licensed**: the open-core community edition under [AGPL-3.0](LICENSE), and a separate commercial/enterprise edition (see [LICENSING.md](LICENSING.md)). For the project to be able to offer your contribution under both, you grant it that right via the **[CLA](CLA.md)**.
+AILIENANT is **dual-licensed**: the open-core community edition under [AGPL-3.0](LICENSE), and a separate commercial/enterprise edition (see [LICENSING.md](docs/legal/LICENSING.md)). For the project to be able to offer your contribution under both, you grant it that right via the **[CLA](docs/legal/CLA.md)**.
 
 - **You keep the copyright to your work.** The CLA is a license, not a transfer.
 - **It's a one-time step.** Signing once covers all your future contributions.
-- **No PR is merged until your CLA is on file.** When you open your first pull request, complete the manual sign-off described in [CLA.md](CLA.md) — there is no automated CLA-bot check yet, so this is the only path today.
+- **No PR is merged until your CLA is on file.** When you open your first pull request, complete the manual sign-off described in [CLA.md](docs/legal/CLA.md) — there is no automated CLA-bot check yet, so this is the only path today.
 
 Without this, a single un-relicensable contribution would block the commercial edition for the whole project — which is why we can't waive it.
 
@@ -20,7 +20,7 @@ Without this, a single un-relicensable contribution would block the commercial e
 
 ## 2. Set up your environment
 
-You'll need **Python 3.10+** (3.13 recommended), **Node.js 20+**, and **VS Code 1.85+**. Docker is recommended for the full execution sandbox. See [HowToUseIt.md](HowToUseIt.md) for the user-level walkthrough; the contributor setup is:
+You'll need **Python 3.10+** (3.13 recommended), **Node.js 20+**, and **VS Code 1.85+**. Docker is recommended for the full execution sandbox. See [HowToUseIt.md](docs/guides/HowToUseIt.md) for the user-level walkthrough; the contributor setup is:
 
 ```powershell
 # Backend
@@ -36,7 +36,7 @@ npm install
 npm run compile
 ```
 
-New to the architecture? Read [HowItWorks.md](HowItWorks.md), then [DEVELOPERS.md](DEVELOPERS.md) for the deep internals.
+New to the architecture? Read [HowItWorks.md](docs/guides/HowItWorks.md), then [DEVELOPERS.md](DEVELOPERS.md) for the deep internals.
 
 ---
 
@@ -98,7 +98,7 @@ Add or update tests for behavior you change. Phases ship a sibling `test_phase*_
 ## 7. Documentation changes
 
 - The **public README is translated into 7 languages** (`README.md` + `README.{es,fr,zh,hi,ru,it}.md`). If you change user-facing content in the English README, please note in your PR which translations need updating — or update them if you can. Keep the language-nav bar and links in sync across all seven.
-- User-facing guides are [HowToUseIt.md](HowToUseIt.md) and [HowItWorks.md](HowItWorks.md); deep internals are [DEVELOPERS.md](DEVELOPERS.md). Put content where its audience will look for it.
+- User-facing guides are [HowToUseIt.md](docs/guides/HowToUseIt.md) and [HowItWorks.md](docs/guides/HowItWorks.md); deep internals are [DEVELOPERS.md](DEVELOPERS.md). Put content where its audience will look for it.
 
 ---
 

@@ -1,14 +1,14 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
 
-<img src="assets/icon-color.svg" alt="AILIENANT" width="340" />
+<img src="../../assets/icon-color.svg" alt="AILIENANT" width="340" />
 
 <h1>AILIENANT</h1>
 
 <p><strong>Le coéquipier de programmation IA qui planifie avant de coder — et qui tourne sur votre machine, avec vos modèles, selon vos règles.</strong></p>
 
 <p>
-  <a href="README.md">English</a> ·
+  <a href="../../README.md">English</a> ·
   <a href="README.es.md">Español</a> ·
   <strong>Français</strong> ·
   <a href="README.zh.md">中文</a> ·
@@ -18,7 +18,7 @@
 </p>
 
 <p>
-  <a href="LICENSE"><img alt="Licence : AGPL-3.0" src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg"></a>
+  <a href="../../LICENSE"><img alt="Licence : AGPL-3.0" src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white">
   <img alt="VS Code" src="https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visualstudiocode&logoColor=white">
@@ -69,7 +69,7 @@ Tout est intégré de façon simple à utiliser, mais sans être une « boîte n
 | Exécution en bac à sable | ✅ Docker / Wasm / soumise à validation | ⚠️ Souvent sur l'hôte |
 | Verrouillage fournisseur | ✅ Aucun — changez librement | ❌ Lié à un seul |
 
-Une comparaison technique plus complète se trouve dans **[HowItWorks.md](HowItWorks.md)**.
+Une comparaison technique plus complète se trouve dans **[HowItWorks.md](../guides/HowItWorks.md)**.
 
 ---
 
@@ -87,7 +87,7 @@ AILIENANT n'est pas un seul modèle qui fait tout — c'est une petite équipe d
 
 Le Codeur se spécialise dans le rôle dont chaque tâche a besoin : **core-dev, architecte/refactor, devops/infra, secops, qa-tester, doc-manager, vcs-manager, ingénieur data/ML** — chacun avec ses propres outils, garde-fous et déclencheurs d'approbation (p. ex. une modification de `.env` s'interrompt toujours pour vous).
 
-Quand une étape échoue, une boucle d'**auto-réparation** lit l'erreur et propose un correctif avant d'abandonner ; pour les étapes ouvertes, une **cellule ReAct** bornée travaille contre un terminal en direct jusqu'à l'aboutissement. Le détail complet par agent est dans **[HowItWorks.md](HowItWorks.md)**.
+Quand une étape échoue, une boucle d'**auto-réparation** lit l'erreur et propose un correctif avant d'abandonner ; pour les étapes ouvertes, une **cellule ReAct** bornée travaille contre un terminal en direct jusqu'à l'aboutissement. Le détail complet par agent est dans **[HowItWorks.md](../guides/HowItWorks.md)**.
 
 ---
 
@@ -105,7 +105,7 @@ AILIENANT part du principe qu'un agent autonome finira par tenter quelque chose 
 
 ## Démarrage rapide
 
-> Guide complet : **[HowToUseIt.md](HowToUseIt.md)**
+> Guide complet : **[HowToUseIt.md](../guides/HowToUseIt.md)**
 
 **Prérequis :** Python 3.10+ (3.13 recommandé), Node.js 20+, VS Code 1.85+ et au moins une source de modèles (une installation locale Ollama/LM Studio, un proxy [LiteLLM](https://docs.litellm.ai/docs/simple_proxy), ou des clés d'API cloud).
 
@@ -146,7 +146,7 @@ Il récupère les bons fichiers avec **GraphRAG** : au lieu de déverser des fic
 
 **Les échecs se routent, ils ne provoquent pas de crash.** Chaque tour d'agent s'exécute dans un harness d'exécution structuré : un `reflexion_guard` intercepte les exceptions et les route vers un agent de réparation dédié (au lieu d'afficher une trace), un `finops_gate` déterministe applique votre plafond de coût à chaque étape du graphe, et des verdicts structurés — pas de stdout brut — pilotent toutes les décisions de retry. Si un nœud a une exception non gérée, elle est écrite dans une file de lettres mortes avant que l'erreur se propage, vous permettant d'inspecter et de reprendre.
 
-La version approfondie — diagrammes, schéma complet de la spécification et logique de routage de réparation — est dans **[HowItWorks.md](HowItWorks.md)**.
+La version approfondie — diagrammes, schéma complet de la spécification et logique de routage de réparation — est dans **[HowItWorks.md](../guides/HowItWorks.md)**.
 
 ---
 
@@ -170,7 +170,7 @@ La compréhension qu'AILIENANT a de votre code n'est pas une boîte noire. Le **
 
 - **🧩 Serveurs MCP.** AILIENANT parle le **Model Context Protocol**, avec un registre curé de serveurs vérifiés (GitHub, Brave Search, Docker, Postgres) activables en un clic. Chaque outil MCP est **classé par privilège** — les inconnus sont traités comme dangereux jusqu'à preuve du contraire — et n'est approuvé que pour la session après votre validation.
 - **⚡ Skills.** Enregistrez des extraits d'instructions réutilisables — globaux ou par workspace — et insérez-les dans n'importe quel prompt. Vos propres modèles de commandes, versionnés avec le projet.
-- **🧰 Outils.** Les agents agissent via un registre d'outils typé et restreint par rôle : lire et tracer le code, éditer des fichiers de façon transactionnelle, exécuter des commandes dans le bac à sable et vous interroger en cas de doute. Le catalogue **grandit vers ~56 outils assignés par rôle** (voir la feuille de route dans **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)**) ; la table complète — quel agent utilise quel outil — est dans **[HowItWorks.md](HowItWorks.md)**.
+- **🧰 Outils.** Les agents agissent via un registre d'outils typé et restreint par rôle : lire et tracer le code, éditer des fichiers de façon transactionnelle, exécuter des commandes dans le bac à sable et vous interroger en cas de doute. Le catalogue **grandit vers ~56 outils assignés par rôle** (voir la feuille de route dans **[docs/PROJECT_MANIFEST.md](../PROJECT_MANIFEST.md)**) ; la table complète — quel agent utilise quel outil — est dans **[HowItWorks.md](../guides/HowItWorks.md)**.
 
 ---
 
@@ -189,7 +189,7 @@ Choisissez le **profil** adapté à la pause que vous prenez — ils arbitrent v
 | **Cloud** | Raisonnement de top qualité, borné par les jetons | 1 tâche · 5 fichiers · plafonné en jetons |
 | **Hybrid** | Le cloud *planifie*, le modèle local *édite* — qualité à moindre coût | 2 tâches · 6 fichiers |
 
-Le mécanisme complet — ce que chaque profil peut réellement accomplir, les enveloppes de temps et la façon dont la recherche arborescente hors ligne (MCTS) valide les changements candidats — est dans **[HowItWorks.md](HowItWorks.md)**.
+Le mécanisme complet — ce que chaque profil peut réellement accomplir, les enveloppes de temps et la façon dont la recherche arborescente hors ligne (MCTS) valide les changements candidats — est dans **[HowItWorks.md](../guides/HowItWorks.md)**.
 
 ---
 
@@ -203,19 +203,19 @@ L'agent travaille contre un **terminal persistant et interactif** — une vérit
 
 | Document | Pour qui |
 | --- | --- |
-| **[HowToUseIt.md](HowToUseIt.md)** | Tout le monde — installer, configurer et exécuter votre première tâche, pas à pas |
-| **[HowItWorks.md](HowItWorks.md)** | Les curieux — architecture, routage et modèle de sécurité expliqués |
-| **[DEVELOPERS.md](DEVELOPERS.md)** | Développeurs du cœur — internes détaillés, diagrammes, pseudocode, carte du code |
-| **[CONTRIBUTING.md](CONTRIBUTING.md)** | Contributeurs — installation, standards et comment envoyer une bonne PR |
-| **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)** | La feuille de route complète, phase par phase |
+| **[HowToUseIt.md](../guides/HowToUseIt.md)** | Tout le monde — installer, configurer et exécuter votre première tâche, pas à pas |
+| **[HowItWorks.md](../guides/HowItWorks.md)** | Les curieux — architecture, routage et modèle de sécurité expliqués |
+| **[DEVELOPERS.md](../../DEVELOPERS.md)** | Développeurs du cœur — internes détaillés, diagrammes, pseudocode, carte du code |
+| **[CONTRIBUTING.md](../../CONTRIBUTING.md)** | Contributeurs — installation, standards et comment envoyer une bonne PR |
+| **[docs/PROJECT_MANIFEST.md](../PROJECT_MANIFEST.md)** | La feuille de route complète, phase par phase |
 
 ---
 
 ## Contribuer
 
-AILIENANT est open source et les contributions sont les bienvenues — de la correction d'une faute de frappe à la clôture d'un objectif de la feuille de route. Commencez par **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+AILIENANT est open source et les contributions sont les bienvenues — de la correction d'une faute de frappe à la clôture d'un objectif de la feuille de route. Commencez par **[CONTRIBUTING.md](../../CONTRIBUTING.md)**.
 
-Une chose à savoir d'emblée : comme le projet est sous double licence (voir ci-dessous), chaque contributeur signe un bref **[Accord de licence de contributeur (CLA)](CLA.md)** avant la fusion de sa première PR. C'est une étape unique et vous conservez le droit d'auteur sur votre travail.
+Une chose à savoir d'emblée : comme le projet est sous double licence (voir ci-dessous), chaque contributeur signe un bref **[Accord de licence de contributeur (CLA)](../legal/CLA.md)** avant la fusion de sa première PR. C'est une étape unique et vous conservez le droit d'auteur sur votre travail.
 
 ---
 
@@ -223,10 +223,10 @@ Une chose à savoir d'emblée : comme le projet est sous double licence (voir ci
 
 AILIENANT est **open-core et sous double licence** :
 
-- **Édition Communauté — [GNU AGPL-3.0](LICENSE).** Libre d'utilisation, d'étude, de modification et de partage. Si vous la distribuez ou exécutez une version modifiée comme service réseau, vous partagez votre code source sous la même licence.
+- **Édition Communauté — [GNU AGPL-3.0](../../LICENSE).** Libre d'utilisation, d'étude, de modification et de partage. Si vous la distribuez ou exécutez une version modifiée comme service réseau, vous partagez votre code source sous la même licence.
 - **Édition Commerciale / Entreprise.** Pour les organisations qui ne peuvent pas accepter les termes de l'AGPL ou qui veulent des fonctionnalités et un support entreprise.
 
-Voir **[LICENSING.md](LICENSING.md)** pour le tableau complet et comment obtenir une licence commerciale.
+Voir **[LICENSING.md](../legal/LICENSING.md)** pour le tableau complet et comment obtenir une licence commerciale.
 
 > Le nom **AILIENANT** et ses logos sont des marques du projet et ne sont pas couverts par l'AGPL.
 

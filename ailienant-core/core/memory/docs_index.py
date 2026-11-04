@@ -50,7 +50,8 @@ logger = logging.getLogger("DOCS_INDEX")
 # Repo root: core/memory/docs_index.py -> core -> ailienant-core -> repo root.
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 # Only the product "what / how" docs — never contributor/internal docs.
-_CORPUS: Tuple[str, ...] = ("HowItWorks.md", "HowToUseIt.md", "README.md")
+# Repo-relative paths; each is labelled by its file name.
+_CORPUS: Tuple[str, ...] = ("docs/guides/HowItWorks.md", "docs/guides/HowToUseIt.md", "README.md")
 
 _TABLE_NAME: str = "ailienant_product_docs"
 _META_PATH: str = os.path.join(LANCEDB_PATH, "_ailienant_docs_meta.json")
@@ -72,8 +73,9 @@ _rebuild_in_flight: bool = False
 def _read_corpus() -> List[Tuple[str, str]]:
     """Read the present corpus files as (source_name, text). Missing files skipped."""
     out: List[Tuple[str, str]] = []
-    for name in _CORPUS:
-        fp = _REPO_ROOT / name
+    for rel in _CORPUS:
+        fp = _REPO_ROOT / rel
+        name = fp.name
         try:
             if fp.is_file():
                 text = fp.read_text(encoding="utf-8", errors="replace").strip()

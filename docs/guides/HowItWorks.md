@@ -2,7 +2,7 @@
 
 This guide explains the machinery behind AILIENANT — the team of agents, how it decides between local and cloud models, how it finds the right code, how it runs and verifies that code safely, how it improves itself while you're away, and how it stays auditable. It's written for the technically curious; you don't need to be an AI engineer.
 
-> For a gentler overview, see the [README](README.md). For the full internals — code maps, pseudocode, exact contracts — see [DEVELOPERS.md](DEVELOPERS.md).
+> For a gentler overview, see the [README](../../README.md). For the full internals — code maps, pseudocode, exact contracts — see [DEVELOPERS.md](../../DEVELOPERS.md).
 
 ---
 
@@ -209,7 +209,7 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `tool_search` | READ_ONLY | all 12 roles | Discover tools that aren't loaded — relevance-retrieve them by query so the prompt stays small as the catalog grows |
 | `todo_write` | READ_ONLY | all 12 roles | Write the agent's structured TODO list to shared state (`content / status / active_form`); replaces the prior list each call, an empty list clears it |
 
-That's the full live catalog — the **56-tool parity matrix** (**[División 8.8](docs/PROJECT_MANIFEST.md)**) is now complete. All tools are organized as a tool × agent matrix so every cognitive role — including Researcher, Analyst, and Planner — is properly equipped:
+That's the full live catalog — the **56-tool parity matrix** (**[División 8.8](../PROJECT_MANIFEST.md)**) is now complete. All tools are organized as a tool × agent matrix so every cognitive role — including Researcher, Analyst, and Planner — is properly equipped:
 
 | Agent | Planned tools (⏳) |
 | --- | --- |
@@ -405,5 +405,5 @@ sequenceDiagram
 ## Where to go next
 
 - **[HowToUseIt.md](HowToUseIt.md)** — put all of this into practice.
-- **[DEVELOPERS.md](DEVELOPERS.md)** — the same machinery at full technical depth: module map, pseudocode, contracts, and the honest list of what isn't built yet.
-- **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)** — the roadmap.
+- **[DEVELOPERS.md](../../DEVELOPERS.md)** — the same machinery at full technical depth: module map, pseudocode, contracts, and the honest list of what isn't built yet.
+- **[docs/PROJECT_MANIFEST.md](../PROJECT_MANIFEST.md)** — the roadmap.
