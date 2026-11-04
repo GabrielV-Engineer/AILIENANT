@@ -107,6 +107,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 );
                 return;
             }
+            // The manager already showed the setup steps; a second, vaguer error adds nothing.
+            if (coreManager.setupRequired) { return; }
             void vscode.window.showErrorMessage('AILIENANT: Core failed to restart.', 'Show Output')
                 .then((choice) => { if (choice === 'Show Output') { coreManager.showOutput(); } });
         },

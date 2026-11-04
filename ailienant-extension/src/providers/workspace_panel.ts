@@ -35,6 +35,17 @@ import {
     withTimeout,
     type CoreState,
 } from './coreDiscovery';
+import {
+    CORE_LAUNCH_MODULE,
+    SETUP_GUIDE_FILE,
+    checkCoreEnvironment,
+    checkDashboard,
+    dashboardUrl,
+    defaultProcessRunner,
+    defaultStatusProbe,
+    describeSetupProblem,
+    resolveCorePython,
+} from './coreEnvironment';
 
 /**
  * ABORT_MESH's routing decision, extracted out of the message-handler closure
@@ -88,19 +99,6 @@ function findBackendPath(extensionFsPath: string): string | null {
     return null;
 }
 
-function findVenvPython(backendPath: string): string {
-    const candidates = [
-        path.join(backendPath, '.venv', 'Scripts', 'python.exe'),  // dot-venv Windows
-        path.join(backendPath, 'venv',  'Scripts', 'python.exe'),  // plain venv Windows
-        path.join(backendPath, '.venv', 'bin', 'python'),          // dot-venv Unix
-        path.join(backendPath, 'venv',  'bin', 'python'),          // plain venv Unix
-    ];
-    for (const p of candidates) {
-        if (fs.existsSync(p)) { return p; }
-    }
-    return process.platform === 'win32' ? 'python' : 'python3';
-}
-
 export function findFreePort(): Promise<number> {
     return new Promise((resolve, reject) => {
         const server = net.createServer();
@@ -117,6 +115,7 @@ export class CoreProcessManager {
     private _state: CoreState = 'stopped';
     private readonly _outputChannel: vscode.OutputChannel;
     private _crashRetries = 0;
+    private _setupRequired = false;
     private static readonly MAX_RETRIES = 3;
     private static readonly RETRY_DELAY_MS = 2000;
 
@@ -149,7 +148,24 @@ export class CoreProcessManager {
 
     getState(): CoreState { return this._state; }
 
+    /** True when the last start was refused because the backend is not installed. */
+    get setupRequired(): boolean { return this._setupRequired; }
+
     showOutput(): void { this._outputChannel.show(); }
+
+    private _notifySetupRequired(backendPath: string): void {
+        void vscode.window.showErrorMessage(
+            'AILIENANT: The Core is not installed yet. Install its Python dependencies, then restart the Core.',
+            'Open Setup Guide', 'Show Output',
+        ).then((choice) => {
+            if (choice === 'Show Output') { this._outputChannel.show(); }
+            if (choice === 'Open Setup Guide') {
+                const guide = vscode.Uri.file(path.join(backendPath, '..', SETUP_GUIDE_FILE));
+                void vscode.commands.executeCommand('markdown.showPreview', guide);
+                this._outputChannel.show(true);
+            }
+        });
+    }
 
     /** Publish the current coordinates to the API/WS clients. */
     publishCoordinates(): void { this._onCoordinates(this._port, this._token); }
@@ -214,7 +230,21 @@ export class CoreProcessManager {
             return;
         }
 
-        const python = findVenvPython(backendPath);
+        const resolved = resolveCorePython(backendPath, process.platform, fs.existsSync);
+        const preflight = await checkCoreEnvironment(resolved.python, backendPath, defaultProcessRunner);
+        if (this._state !== 'starting') { return; }   // stopped while the check ran
+        if (preflight !== 'ok') {
+            // Retrying cannot fix a missing install; say what to run instead.
+            this._state = 'crashed';
+            this._setupRequired = true;
+            this._outputChannel.appendLine(
+                describeSetupProblem(preflight, resolved, backendPath, process.platform),
+            );
+            this._notifySetupRequired(backendPath);
+            return;
+        }
+        this._setupRequired = false;
+        const python = resolved.python;
         const env = {
             ...process.env,
             AILIENANT_API_PORT: String(this._port),
@@ -225,7 +255,7 @@ export class CoreProcessManager {
 
         const proc = cp.spawn(
             python,
-            ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(this._port)],
+            ['-m', CORE_LAUNCH_MODULE, 'main:app', '--host', '127.0.0.1', '--port', String(this._port)],
             { cwd: backendPath, env, detached: false },
         );
 
@@ -743,6 +773,27 @@ export class WorkspacePanelManager {
                 void vscode.commands.executeCommand('ailienant.restartCore');
             }
         });
+    }
+
+    /**
+     * Open the web dashboard only once it can actually load; otherwise explain
+     * why and offer the fix, instead of a browser tab on a dead port.
+     */
+    private async _openDashboard(url: string): Promise<void> {
+        const availability = await checkDashboard(url, defaultStatusProbe);
+        if (availability === 'ok') {
+            void vscode.env.openExternal(vscode.Uri.parse(url));
+            return;
+        }
+        logger.warn(`[dashboard] not opened (${availability}): ${url}`);
+        const message = availability === 'dashboard-not-built'
+            ? 'AILIENANT: The Core is running but the dashboard is not built. Run "npm run compile" in ailienant-extension, then restart the Core.'
+            : this._coreManager?.setupRequired
+                ? 'AILIENANT: The dashboard needs the Core, which is not installed yet. See the Core output for the setup steps.'
+                : 'AILIENANT: The dashboard needs the Core, which is not running.';
+        const choice = await vscode.window.showWarningMessage(message, 'Restart Core', 'Show Output');
+        if (choice === 'Show Output') { this._coreManager?.showOutput(); }
+        if (choice === 'Restart Core') { void vscode.commands.executeCommand('ailienant.restartCore'); }
     }
 
     private _createPanel(session: Session): void {
@@ -1432,10 +1483,7 @@ export class WorkspacePanelManager {
                         ? `http://127.0.0.1:${this._coreManager.port}`
                         : cfg.get<string>('backendUrl', 'http://localhost:8000').replace(/\/$/, '');
                     const tab = typeof data.tab === 'string' ? data.tab : '';
-                    const url = tab
-                        ? `${base}/dashboard/?tab=${encodeURIComponent(tab)}`
-                        : `${base}/dashboard/`;
-                    void vscode.env.openExternal(vscode.Uri.parse(url));
+                    void this._openDashboard(dashboardUrl(base, tab));
                     break;
                 }
                 case 'OPEN_SETTINGS': {

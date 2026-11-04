@@ -98,6 +98,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-238 | Two independent readiness budgets poll `checkHealth()` over overlapping windows (`_waitForReady` 45s, `_ensureBackend` 30s) | LOW | Architecture | future host-lifecycle consolidation | Floating |
 | DEBT-239 | `~/.ailienant/run.json` is a single global file but ports are per-window — two VS Code windows on different repos share it, last writer wins; empirically demonstrated | MEDIUM | Architecture | workspace-scoped discovery slice | Floating |
 | DEBT-240 | A 4001 auth rejection has no automatic recovery — the user must invoke Restart Core from the toast | LOW | UX / robustness | after DEBT-239 settles ownership | Floating |
+| DEBT-241 | A source install must still create the backend venv by hand; the host now only diagnoses a missing one (pre-flight + dashboard guard) | LOW | Declared tradeoff (MVP) | 13.2 binary packaging | Locked |
 
 ---
 
@@ -1900,6 +1901,18 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Gap:** close code 4001 means the server rejected our token; the client deliberately stops retrying (retrying the same wrong token would loop). The user now gets a toast with a **Restart Core** action, but recovery is still manual.
 - **Why not automatic:** with adoption in place, a 4001 specifically means "we are pointed at a Core that is not ours," which auto-restarting would fix — but that Core may legitimately belong to another VS Code window, and a kill loop between two windows fighting over one backend is worse than a toast. Blocked on DEBT-239 settling whether a Core is owned per-machine or per-workspace.
 - **Phase:** unscheduled — after DEBT-239.
+
+---
+
+### DEBT-241 [LOW · Locked 13.2] — A source install must still set up the backend venv by hand; the host only diagnoses it
+
+- **Date:** 2026-11-04
+- **Reproduce:** clone the repo, skip the README's backend step (no `ailienant-core/venv`), compile and launch the extension.
+- **Files:** `ailienant-extension/src/providers/coreEnvironment.ts` (pre-flight + dashboard guard), `ailienant-extension/src/providers/workspace_panel.ts` (`CoreProcessManager.start`, `_openDashboard`).
+- **Was:** with no venv the host silently fell back to the system Python, the Core died on `No module named uvicorn`, retried three times, and surfaced only "Core process stopped unexpectedly"; the dashboard button opened a browser tab on a dead port.
+- **Patch (declared MVP):** a pre-flight imports the launch module before spawning and, on failure, stops without retrying and names the exact setup commands; the dashboard button probes `/dashboard/` first and explains a stopped Core or an unbuilt SPA. The user still runs `pip install` themselves.
+- **Why not auto-create the venv:** 13.2 ships the Core as a per-OS binary, which removes the Python prerequisite entirely; an in-extension venv bootstrapper would be thrown away by it.
+- **Phase:** 13.2 (Binary Packaging) — when the binary path lands, the pre-flight becomes the source-checkout fallback or is removed.
 
 ---
 
