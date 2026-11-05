@@ -2,7 +2,7 @@
 
 > **Binding contract** for the Phase 7.14 frontend track (Zero-Bubble canvas + Elite Diff Engine).
 > This document is the *machine-checkable* companion to the narrative ADRs in
-> [`PHASE_7_14_BLUEPRINT.md`](PHASE_7_14_BLUEPRINT.md) (ADR-720 → ADR-726). Where the blueprint
+> [`BLUEPRINT_DIGEST_PHASES_7_11.md` §3](BLUEPRINT_DIGEST_PHASES_7_11.md) (ADR-720 → ADR-726). Where the blueprint
 > states intent, this file pins exact versions, licenses, the bundle ceiling, and the two
 > engineering blind-spots that must be resolved *before* 7.14.2 writes any rendering code.
 >

@@ -359,6 +359,6 @@ async def test_synthetic_corpus_range_characterization() -> None:
 
     assert len(ratios) == len(corpus)
     # Reported, not asserted — the GO/NO-GO verdict is decided from real
-    # telemetry (docs/PHASE_8_16_BLUEPRINT.md), not this synthetic sweep.
+    # telemetry (docs/BLUEPRINT_DIGEST_PHASES_7_11.md §9), not this synthetic sweep.
     median = statistics.median(ratios)
     assert 0.0 <= median <= 1.0

@@ -2,7 +2,7 @@
 
 > **Audience:** core contributors working *on* AILIENANT. This is the deep technical reference — architecture, the execution graph, subsystem internals, pseudocode for the load-bearing paths, the security model, and an honest map of what is and isn't built. If you're a *user*, start with [HowToUseIt.md](docs/guides/HowToUseIt.md); for a gentle architectural tour, see [HowItWorks.md](docs/guides/HowItWorks.md).
 >
-> **Source of truth for status & roadmap:** [docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md) and [docs/DEV_JOURNAL.md](docs/DEV_JOURNAL.md) (Phase 8.x active log) / [docs/DEV_JOURNAL_ARCHIVE.md](docs/DEV_JOURNAL_ARCHIVE.md) (Phase 0–7.19 history). Where this guide and those disagree, they win. Architectural contracts live in the `docs/PHASE_*_BLUEPRINT.md` files and `docs/SCHEMA_EVOLUTION.MD`.
+> **Source of truth for status & roadmap:** [docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md) and [docs/DEV_JOURNAL.md](docs/DEV_JOURNAL.md) (Phase 8.x active log) / [docs/DEV_JOURNAL_ARCHIVE.md](docs/DEV_JOURNAL_ARCHIVE.md) (Phase 0–7.19 history). Where this guide and those disagree, they win. Architectural contracts live in `docs/SCHEMA_EVOLUTION.MD`, any open-phase `docs/PHASE_*_BLUEPRINT.md`, and — for Phases 7–11 — the consolidated [docs/BLUEPRINT_DIGEST_PHASES_7_11.md](docs/BLUEPRINT_DIGEST_PHASES_7_11.md).
 
 ---
 
@@ -611,5 +611,6 @@ If you want one of these, it's a great place to start — see [CONTRIBUTING.md](
 | [docs/TECH_DEBT_BACKLOG.md](docs/TECH_DEBT_BACKLOG.md) | Tracked technical debt |
 | [docs/DEBUGGING_RUNBOOK.md](docs/DEBUGGING_RUNBOOK.md) | Where to look when a real install misbehaves — exec log, timeline, audit chain, telemetry |
 | [docs/GATEWAY_INTEGRATION.md](docs/GATEWAY_INTEGRATION.md) | External-agent integration guide for the MCP capability gateway (launch, auth, ceilings, catalog, versioning) |
-| `docs/PHASE_*_BLUEPRINT.md` | Per-phase architectural contracts (ADRs) |
+| [docs/BLUEPRINT_DIGEST_PHASES_7_11.md](docs/BLUEPRINT_DIGEST_PHASES_7_11.md) | Consolidated architectural decisions (ADR-701..762) for Phases 7–11, incl. the open Division 8.16 decision gate |
+| `docs/PHASE_*_BLUEPRINT.md` | Per-phase architectural contracts (ADRs) for future open phases |
 | [CLAUDE.md](CLAUDE.md) | Coding standards, architectural guardrails, and build protocols |

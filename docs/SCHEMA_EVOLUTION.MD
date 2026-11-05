@@ -930,7 +930,7 @@ checkpoint shape is altered.
 **Change:** five additive WS events that let the backend `DevcontainerSandboxAdapter`
 (`core/sandbox.py`) route trusted-tier provisioning and command execution over the existing
 host socket — the host owns the local container runtime and runs `devcontainer up` / `exec`.
-This is the version-tagged realization of the non-normative wire sketch in `PHASE_8.13_BLUEPRINT.md §3.2`.
+This is the version-tagged realization of the non-normative wire sketch in the Division 8.13 blueprint (consolidated in `BLUEPRINT_DIGEST_PHASES_7_11.md §8`).
 
 **New events** (`api/ws_contracts.py`), all carrying a `request_id` (UUID4) correlation key so
 concurrent commands on one session never cross-talk and a retried inbound frame is idempotent:
@@ -3387,3 +3387,28 @@ early.
 the existing `intent` / `constraints` / `scope_hints` / `ubiquitous_language`. `_compose_planner_brief`
 renders each field only when present, so a model that returns the older four-key shape still
 composes a valid brief — the soft-schema degradation §58 established is unchanged.
+
+## §62 — llama.cpp Provider: `EndpointConfig.provider` / `EngineStatusItem.id` (Manifest 8.25)
+
+### What changed (additive)
+
+- `EndpointConfig.provider` (persisted in `byom_config.json`) accepts `"llamacpp"`. The field is now
+  a `str` validated against `core/config/provider_registry.PROVIDER_REGISTRY` instead of a restated
+  `Literal`; every previously valid value still validates, an unknown id is still rejected.
+- `GET /api/v1/byom/engines` returns two more `EngineStatusItem` rows, ids `"llamacpp"` and
+  `"llamacpp-embed"`. Consumers already iterate the list generically.
+- `EmbeddingTarget.provider` / `ModelTarget.provider` may carry `"llamacpp"`. Both were already
+  free-form strings.
+
+### Routing contract
+
+A tier's model id resolves to the endpoint whose tested catalogue (`model_cache[endpoint_id]`) lists
+it, falling back to the provider's first endpoint. This is what lets several llama-servers (one per
+model, distinct `--alias`) coexist; two endpoints serving the same id resolve to the first. Model ids
+from a local engine are always stored with that engine's prefix (`llamacpp/<id>`), so a local GGUF
+named after a cloud provider can never be routed to the cloud.
+
+### Consumer tolerance
+
+No field was removed or repurposed. An older dashboard that does not know `"llamacpp"` still renders
+it from `GET /providers`; an older `byom_config.json` loads unchanged.
