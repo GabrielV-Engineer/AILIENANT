@@ -4,7 +4,7 @@ BYOM (Bring Your Own Model) REST surface for the Web Dashboard.
 
 Endpoints (prefix /api/v1/byom):
   GET  /providers   — provider registry projected for the UI (no secrets).
-  GET  /engines     — probe local AI engines (Ollama, LM Studio); return health status.
+  GET  /engines     — probe local AI engines (Ollama, LM Studio, llama.cpp); return health status.
   POST /test        — probe a model endpoint; returns + imports its discovered models.
   POST /ping        — low-token health check: resolve a model/tier and send a 1-word completion.
   GET  /config      — load BYOM config + built-in presets + the available-model pool.
@@ -50,12 +50,21 @@ from core.config_generator import (
     LM_STUDIO_API_BASE,
     OLLAMA_API_BASE,
     _infer_tier,
+    _probe_llamacpp,
+    _probe_llamacpp_embed,
     _probe_lmstudio,
     _probe_ollama,
     discover_models,
     write_config_with_overrides,
 )
-from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
+from shared.config import (
+    LITELLM_PROXY_API_KEY,
+    LITELLM_PROXY_BASE_URL,
+    LLAMA_CPP_API_BASE,
+    LLAMA_CPP_EMBED_API_BASE,
+    LLAMA_CPP_EMBED_DIM,
+    LLAMA_CPP_EMBED_MODEL,
+)
 from api.websocket_manager import vfs_manager
 from core.indexer import lazy_indexer
 
@@ -79,6 +88,10 @@ _EMBED_PROVIDER_PRIORITY = (
 )
 _DIM_OLLAMA = 768
 _DIM_OPENAI = 1536
+# Used only when the llama.cpp embedding server cannot be probed and no explicit
+# dimension is configured; matches the recommended nomic-embed GGUF.
+_DIM_LLAMACPP_FALLBACK = _DIM_OLLAMA
+_EMBED_DIM_PROBE_TIMEOUT_S = 10.0
 
 logger = logging.getLogger("BYOM_API")
 router = APIRouter(prefix="/api/v1/byom", tags=["byom"])
@@ -139,7 +152,7 @@ class BYOMConfigResponse(BaseModel):
 
 class EngineStatusItem(BaseModel):
     """Health status of a known local AI engine (Ollama, LM Studio, etc.)."""
-    id: str           # "ollama" | "lmstudio"
+    id: str           # "ollama" | "lmstudio" | "llamacpp" | "llamacpp-embed"
     name: str         # human-readable label
     url: str          # default base URL for this engine
     running: bool
@@ -201,29 +214,35 @@ async def _build_builtin_presets(
     The built-ins are editable starting examples drawn from that real pool.
     """
     raw = await discover_models()
-    ollama = [m for m in raw if m["provider"] == "ollama"]
 
-    def _best_ollama(tier: str) -> str:
-        for m in ollama:
-            if _infer_tier(m["name"]) == tier:
-                return f"ollama/{m['name']}"
-        return f"ollama/{ollama[0]['name']}" if ollama else ""
-
-    # Cloud models the user actually imported (canonical "provider/model" ids).
+    # Imported catalogues (canonical "provider/model" ids), split by where the
+    # provider runs: a tested llama.cpp / LM Studio endpoint is local, not cloud.
+    cached_local: list[str] = []
     cached_cloud: list[str] = []
     for ids in (model_cache or {}).values():
         for mid in ids:
-            if mid not in cached_cloud:
-                cached_cloud.append(mid)
+            spec = get_provider(mid.split("/", 1)[0]) if "/" in mid else None
+            bucket = cached_local if spec is not None and spec.is_local else cached_cloud
+            if mid not in bucket:
+                bucket.append(mid)
     primary_cloud = cached_cloud[0] if cached_cloud else ""
+
+    local_ids: list[str] = [f"ollama/{m['name']}" for m in raw if m["provider"] == "ollama"]
+    local_ids += [mid for mid in cached_local if mid not in local_ids]
+
+    def _best_local(tier: str) -> str:
+        for mid in local_ids:
+            if _infer_tier(mid.split("/", 1)[1]) == tier:
+                return mid
+        return local_ids[0] if local_ids else ""
 
     builtin: list[ModelPreset] = [
         ModelPreset(
             id="builtin-local",
             name="Local Only",
             is_builtin=True,
-            description="Example: route every tier to your local Ollama models. Edit to customize.",
-            tiers={t: _best_ollama(t) for t in ("small", "medium", "big", "cloud")},
+            description="Example: route every tier to your local models. Edit to customize.",
+            tiers={t: _best_local(t) for t in ("small", "medium", "big", "cloud")},
         ),
         ModelPreset(
             id="builtin-hybrid",
@@ -231,8 +250,8 @@ async def _build_builtin_presets(
             is_builtin=True,
             description="Example: local small/medium, cloud big/cloud. Edit to customize.",
             tiers={
-                "small": _best_ollama("small"),
-                "medium": _best_ollama("medium"),
+                "small": _best_local("small"),
+                "medium": _best_local("medium"),
                 "big": primary_cloud,
                 "cloud": primary_cloud,
             },
@@ -260,7 +279,7 @@ async def _build_builtin_presets(
             _add(f"ollama/{m['name']}", m["name"])
         elif not m["is_local"]:
             _add(m["name"], m["name"])  # env-key fallback entries (no UI endpoint)
-    for mid in cached_cloud:
+    for mid in cached_local + cached_cloud:
         display = mid.split("/", 1)[1] if "/" in mid else mid
         _add(mid, display)
 
@@ -286,10 +305,15 @@ def _canonical_model_id(provider: str, raw_id: str) -> str:
     Strips Google's ``models/`` prefix, leaves an already-known provider prefix
     intact, and otherwise prepends the endpoint's provider id — so a preset tier
     value resolves unambiguously even with several cloud endpoints configured.
+    A local engine's id is always prefixed: a local model named ``qwen/...`` must
+    never be attributed to the cloud provider of the same name.
     """
     name = raw_id.strip()
     if name.startswith("models/"):
         name = name.split("/", 1)[1]
+    spec = get_provider(provider)
+    if spec is not None and spec.is_local:
+        return f"{provider}/{name}"
     head = name.split("/", 1)[0]
     if head in _KNOWN_PROVIDERS:
         return name
@@ -350,6 +374,12 @@ def _merge_patch(existing: BYOMConfig, raw_body: Dict[str, Any]) -> BYOMConfig:
     )
 
 
+def _strip_v1(url: str) -> str:
+    """Drop a trailing /v1 so a pasted OpenAI-compatible base is not doubled."""
+    u = url.strip().rstrip("/")
+    return u[: -len("/v1")] if u.endswith("/v1") else u
+
+
 def _ensure_v1(url: str) -> str:
     """Normalize an OpenAI-compatible base URL to end in /v1 (LM Studio, vLLM, custom)."""
     u = url.strip().rstrip("/")
@@ -381,6 +411,25 @@ def _endpoint_for(provider: str, endpoints: list[EndpointConfig]) -> Optional[En
     return next((e for e in endpoints if e.provider == provider), None)
 
 
+def _endpoint_for_model(
+    model_id: str,
+    provider: str,
+    endpoints: list[EndpointConfig],
+    model_cache: Optional[dict[str, list[str]]] = None,
+) -> Optional[EndpointConfig]:
+    """The endpoint that actually serves ``model_id``.
+
+    Several endpoints of one provider are common for local engines (one
+    llama-server per model on its own port). The endpoint whose tested catalogue
+    lists the model wins; otherwise the provider's first endpoint.
+    """
+    if model_id and model_cache:
+        for ep in endpoints:
+            if ep.provider == provider and model_id in model_cache.get(ep.id, ()):
+                return ep
+    return _endpoint_for(provider, endpoints)
+
+
 def _build_embedding_target(
     provider: str, endpoints: list[EndpointConfig], has_ollama: bool
 ) -> EmbeddingTarget:
@@ -401,6 +450,14 @@ def _build_embedding_target(
             model=f"openai/{_LMSTUDIO_EMBED_MODEL}", provider="lmstudio",
             api_base=base, api_key=(ep.api_key if ep and ep.api_key else "sk-noauth"),
             dim=_DIM_OLLAMA, is_local=True,
+        )
+    if provider == "llamacpp":
+        # Embeddings come from a dedicated `--embeddings` llama-server, never the
+        # chat endpoint. The dimension is corrected by `_probe_embedding_dim`.
+        return EmbeddingTarget(
+            model=f"openai/{LLAMA_CPP_EMBED_MODEL}", provider="llamacpp",
+            api_base=_ensure_v1(LLAMA_CPP_EMBED_API_BASE), api_key="sk-noauth",
+            dim=_configured_llamacpp_embed_dim() or _DIM_LLAMACPP_FALLBACK, is_local=True,
         )
     if provider in ("vllm", "custom"):
         ep = _endpoint_for(provider, endpoints)
@@ -472,6 +529,48 @@ def _build_embedding_target(
     )
 
 
+def _configured_llamacpp_embed_dim() -> Optional[int]:
+    """The operator-set llama.cpp embedding dimension, if any (invalid → None)."""
+    try:
+        dim = int(LLAMA_CPP_EMBED_DIM) if LLAMA_CPP_EMBED_DIM else 0
+    except ValueError:
+        logger.warning("Ignoring invalid AILIENANT_LLAMACPP_EMBED_DIM=%r", LLAMA_CPP_EMBED_DIM)
+        return None
+    return dim if dim > 0 else None
+
+
+async def _probe_embedding_dim(target: EmbeddingTarget) -> EmbeddingTarget:
+    """Measure a llama.cpp embedding server's real vector size.
+
+    An explicit configured dimension wins; otherwise one tiny embedding call
+    decides it. An unreachable server keeps the target's current dimension —
+    the indexer preflight then reports the server as down.
+    """
+    if target.provider != "llamacpp" or not target.api_base:
+        return target
+    if _configured_llamacpp_embed_dim() is not None:
+        return target
+    model = target.model.split("/", 1)[1] if target.model.startswith("openai/") else target.model
+    try:
+        async with httpx.AsyncClient(timeout=_EMBED_DIM_PROBE_TIMEOUT_S) as client:
+            resp = await client.post(
+                f"{target.api_base.rstrip('/')}/embeddings",
+                json={"model": model, "input": "dimension probe"},
+                headers={"Authorization": f"Bearer {target.api_key}"} if target.api_key else {},
+            )
+            resp.raise_for_status()
+            vector = resp.json()["data"][0]["embedding"]
+    except Exception as exc:  # noqa: BLE001 — a probe fault keeps the fallback dimension
+        logger.warning(
+            "llama.cpp embedding dimension probe failed at %s: %s", target.api_base, exc,
+            exc_info=True,
+        )
+        return target
+    if isinstance(vector, list) and vector:
+        return target.model_copy(update={"dim": len(vector)})
+    return target
+
+
 def _derive_embedding_target(
     preset: ModelPreset,
     endpoints: list[EndpointConfig],
@@ -500,7 +599,10 @@ def _provider_key(spec: ProviderSpec, ep: Optional[EndpointConfig]) -> str:
 
 
 def _connection_for_provider(
-    provider: str, endpoints: list[EndpointConfig]
+    provider: str,
+    endpoints: list[EndpointConfig],
+    model_id: str = "",
+    model_cache: Optional[dict[str, list[str]]] = None,
 ) -> tuple[Optional[str], str, bool]:
     """Resolve (api_base, api_key, is_local) for a chat provider from the registry.
 
@@ -509,7 +611,7 @@ def _connection_for_provider(
     cloud URL from being mangled. OpenAI-compatible + local engines carry a base.
     """
     spec = get_provider(provider)
-    ep = _endpoint_for(provider, endpoints)
+    ep = _endpoint_for_model(model_id, provider, endpoints, model_cache)
     if spec is None:
         return None, (ep.api_key if ep and ep.api_key else ""), False
 
@@ -537,10 +639,16 @@ def _normalize_chat_model(model_id: str, provider: str) -> str:
     return normalize_model_string(model_id, spec)
 
 
-def _build_chat_target(model_id: str, endpoints: list[EndpointConfig]) -> ModelTarget:
+def _build_chat_target(
+    model_id: str,
+    endpoints: list[EndpointConfig],
+    model_cache: Optional[dict[str, list[str]]] = None,
+) -> ModelTarget:
     """Resolve a preset tier's concrete model id into a litellm-ready ModelTarget."""
     provider = _provider_of_model(model_id, endpoints) or ("ollama" if model_id.startswith("ollama/") else "openai")
-    api_base, api_key, is_local = _connection_for_provider(provider, endpoints)
+    api_base, api_key, is_local = _connection_for_provider(
+        provider, endpoints, model_id, model_cache,
+    )
     return ModelTarget(
         model=_normalize_chat_model(model_id, provider),
         provider=provider,
@@ -613,7 +721,7 @@ async def test_connection(req: TestConnectionRequest) -> TestConnectionResponse:
         probe_url = f"{base}/api/tags" if base else None
         probe_kind = "ollama_tags"
     else:
-        base = _normalize_url(req.url)
+        base = _strip_v1(_normalize_url(req.url))
         probe_url = f"{base}/v1/models" if base else None
         probe_kind = "openai_models"
 
@@ -762,11 +870,13 @@ async def put_config(request: Request) -> BYOMConfigResponse:
             await _apply_preset(active)
             # Derive + persist the provider-agnostic embedding target so the
             # indexer preflight + semantic memory route correctly.
-            merged.embedding = _derive_embedding_target(active, merged.endpoints, discovered)
+            merged.embedding = await _probe_embedding_dim(
+                _derive_embedding_target(active, merged.endpoints, discovered)
+            )
             # Persist per-tier chat targets so the main chat + analyst can call
             # the active model directly (no proxy).
             merged.chat_models = {
-                tier: _build_chat_target(model_id, merged.endpoints)
+                tier: _build_chat_target(model_id, merged.endpoints, merged.model_cache)
                 for tier, model_id in active.tiers.items() if model_id
             }
             await asyncio.to_thread(save_byom_config, merged)
@@ -791,7 +901,7 @@ async def ping_model(req: PingRequest) -> PingResponse:
 
     target: Optional[ModelTarget] = None
     if req.model_id:
-        target = _build_chat_target(req.model_id, cfg.endpoints)
+        target = _build_chat_target(req.model_id, cfg.endpoints, cfg.model_cache)
     elif req.tier:
         target = model_resolver.get_chat_target(req.tier)
 
@@ -856,8 +966,8 @@ async def get_providers() -> list[ProviderSpecOut]:
 @router.get("/engines", response_model=list[EngineStatusItem])
 async def get_engine_status() -> list[EngineStatusItem]:
     """Probe known local AI engines and return their health status."""
-    ollama_models, lmstudio_models = await asyncio.gather(
-        _probe_ollama(), _probe_lmstudio()
+    ollama_models, lmstudio_models, llamacpp_models, llamacpp_embed_models = await asyncio.gather(
+        _probe_ollama(), _probe_lmstudio(), _probe_llamacpp(), _probe_llamacpp_embed(),
     )
     return [
         EngineStatusItem(
@@ -875,5 +985,21 @@ async def get_engine_status() -> list[EngineStatusItem]:
             running=lmstudio_models is not None,
             model_count=len(lmstudio_models or []),
             models=lmstudio_models or [],
+        ),
+        EngineStatusItem(
+            id="llamacpp",
+            name="llama.cpp",
+            url=LLAMA_CPP_API_BASE,
+            running=llamacpp_models is not None,
+            model_count=len(llamacpp_models or []),
+            models=llamacpp_models or [],
+        ),
+        EngineStatusItem(
+            id="llamacpp-embed",
+            name="llama.cpp (embeddings)",
+            url=LLAMA_CPP_EMBED_API_BASE,
+            running=llamacpp_embed_models is not None,
+            model_count=len(llamacpp_embed_models or []),
+            models=llamacpp_embed_models or [],
         ),
     ]

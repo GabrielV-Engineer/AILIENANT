@@ -255,6 +255,12 @@ class LazyIndexer:
                     resp = await client.get(f"{t.api_base}/models")
                     resp.raise_for_status()
         except Exception:
+            if t.provider == "llamacpp":
+                return (
+                    f"llama.cpp embedding server not reachable at {t.api_base}. Start one "
+                    "on that address with an embedding model (`llama-server -m <embed>.gguf "
+                    "--embeddings --port <port>`), or point LLAMA_CPP_EMBED_API_BASE at it."
+                )
             return (
                 f"{t.provider} engine not reachable at {t.api_base}. Start it or "
                 "update the BYOM endpoint, then it will index automatically."

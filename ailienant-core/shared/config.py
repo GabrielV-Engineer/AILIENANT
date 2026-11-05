@@ -28,6 +28,16 @@ LITELLM_PROXY_API_KEY: str = os.getenv("LITELLM_PROXY_API_KEY", "sk-ailienant-lo
 # ---------------------------------------------------------------------------
 OLLAMA_API_BASE: str = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
 LM_STUDIO_API_BASE: str = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234")
+# llama-server's own default port.
+LLAMA_CPP_API_BASE: str = os.getenv("LLAMA_CPP_API_BASE", "http://localhost:8080")
+# llama-server serves embeddings only from an instance started with `--embeddings`
+# and an embedding GGUF, so it runs as a second server on its own port.
+LLAMA_CPP_EMBED_API_BASE: str = os.getenv("LLAMA_CPP_EMBED_API_BASE", "http://localhost:8081")
+# Model name sent to the embedding instance; a single-model llama-server ignores it,
+# a router-mode server uses it to pick the GGUF.
+LLAMA_CPP_EMBED_MODEL: str = os.getenv("AILIENANT_LLAMACPP_EMBED_MODEL", "nomic-embed-text")
+# Optional explicit vector size; when unset the dimension is probed from the server.
+LLAMA_CPP_EMBED_DIM: str = os.getenv("AILIENANT_LLAMACPP_EMBED_DIM", "")
 
 # Ailienant model alias tiers — mapped to real models inside LiteLLM proxy config.yaml.
 # Override via env to switch providers without touching code (Phase 1.6.2).

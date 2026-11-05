@@ -75,10 +75,11 @@ async def resolve_real_window(state: Mapping[str, Any], tier: str = "big") -> in
     machine can actually serve, and a budget check against the architectural
     number alone lets a caller (the summarizer's compaction trigger, the
     tool-RAG eager/deferred gate) let far more into the prompt than the local
-    engine can hold. A cloud target is unaffected — no local RAM constraint
+    engine can hold. A local llama.cpp target reports the window its server
+    was started with, which is already the served size. A cloud target is unaffected — no local RAM constraint
     applies, so the architectural ceiling remains correct there.
 
-    A REMOTE target the probe cannot speak to (it is Ollama-only) falls to the
+    A REMOTE target the probe cannot speak to (Ollama/llama.cpp only) falls to the
     window litellm's metadata declares for that model
     (:func:`resolve_declared_window`) before the conservative constant. Without
     that step every cloud model was budgeted against

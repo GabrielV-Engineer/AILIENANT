@@ -42,6 +42,7 @@ from core.db_maintenance import WALCheckpointer
 from core.sandbox import resolve_default_adapter
 from core.task_service import TaskPayload, get_task_service
 from core.config.byom_config import stream_watchdog_ms, stream_watchdog_is_local
+from core.config.provider_registry import get_provider
 from core.config.host_discovery import clear_run_state, write_run_state
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -749,6 +750,15 @@ async def health_check() -> dict[str, str]:
     return {"status": "online", "phase": "2.4", "system": "Tiered Checkpoint + PPR Active"}
 
 
+def _is_local_litellm_prefix(prefix: str) -> bool:
+    """Locality of a litellm route prefix, read from the provider registry.
+
+    ``ollama_chat`` is litellm's chat route for the ``ollama`` provider.
+    """
+    spec = get_provider("ollama" if prefix == "ollama_chat" else prefix)
+    return spec is not None and spec.is_local
+
+
 @app.get("/api/v1/models/available", response_model=ModelsAvailableResponse)
 async def get_available_models() -> ModelsAvailableResponse:
     """
@@ -779,7 +789,7 @@ async def get_available_models() -> ModelsAvailableResponse:
                         id=alias,
                         name=real_model,
                         provider=provider,
-                        is_local=provider in ("ollama", "lmstudio"),
+                        is_local=_is_local_litellm_prefix(provider),
                     ))
                 logger.info("Model discovery via LiteLLM proxy: %d model(s)", len(models))
     except Exception:

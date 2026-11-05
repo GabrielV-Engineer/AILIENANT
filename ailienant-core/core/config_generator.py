@@ -14,14 +14,19 @@ from typing import Any, Dict, List, Optional, TypedDict
 import httpx
 import yaml
 
+from shared.config import (
+    LLAMA_CPP_API_BASE,
+    LLAMA_CPP_EMBED_API_BASE,
+    LM_STUDIO_API_BASE,
+    OLLAMA_API_BASE,
+)
+
 logger = logging.getLogger("ConfigGenerator")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-OLLAMA_API_BASE: str = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
-LM_STUDIO_API_BASE: str = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234")
 CONFIG_YAML_PATH: str = os.getenv("LITELLM_CONFIG_PATH", "config.yaml")
 _PROBE_TIMEOUT: float = 2.0  # seconds — fast enough not to block startup
 
@@ -85,13 +90,28 @@ async def _probe_ollama() -> Optional[List[str]]:
 
 async def _probe_lmstudio() -> Optional[List[str]]:
     """GET /v1/models from LM Studio (OpenAI-compatible). Returns model IDs or None."""
+    return await _probe_openai_models(LM_STUDIO_API_BASE)
+
+
+async def _probe_openai_models(api_base: str) -> Optional[List[str]]:
+    """GET /v1/models from an OpenAI-compatible server. Returns model IDs or None."""
     try:
         async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as client:
-            resp = await client.get(f"{LM_STUDIO_API_BASE}/v1/models")
+            resp = await client.get(f"{api_base.rstrip('/')}/v1/models")
             resp.raise_for_status()
             return [m["id"] for m in resp.json().get("data", []) if m.get("id")]
     except Exception:
         return None
+
+
+async def _probe_llamacpp() -> Optional[List[str]]:
+    """Models served by the default llama-server chat instance, or None if down."""
+    return await _probe_openai_models(LLAMA_CPP_API_BASE)
+
+
+async def _probe_llamacpp_embed() -> Optional[List[str]]:
+    """Models served by the llama-server embedding instance, or None if down."""
+    return await _probe_openai_models(LLAMA_CPP_EMBED_API_BASE)
 
 
 # ---------------------------------------------------------------------------

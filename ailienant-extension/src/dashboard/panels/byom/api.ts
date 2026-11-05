@@ -21,7 +21,7 @@ async function _json<T>(path: string, init?: RequestInit): Promise<T> {
 // ---------------------------------------------------------------------------
 
 export type Provider =
-    | 'ollama' | 'lmstudio' | 'vllm' | 'openai' | 'openrouter' | 'anthropic' | 'custom'
+    | 'ollama' | 'lmstudio' | 'llamacpp' | 'vllm' | 'openai' | 'openrouter' | 'anthropic' | 'custom'
     | 'google' | 'deepseek' | 'mistral' | 'qwen' | 'moonshot' | 'zhipu';
 
 // Registry provider metadata served by GET /providers — drives the dashboard's
@@ -102,7 +102,7 @@ export interface BYOMConfigPayload {
 }
 
 export interface EngineStatus {
-    id: string;           // "ollama" | "lmstudio"
+    id: string;           // "ollama" | "lmstudio" | "llamacpp" | "llamacpp-embed"
     name: string;
     url: string;
     running: boolean;

@@ -193,7 +193,7 @@ def resolve_declared_window(model_name: Optional[str]) -> Optional[int]:
     """A model's context window as litellm's own metadata declares it.
 
     The complement to :func:`probe_runtime_capabilities`, which speaks only to
-    Ollama: for every other provider that probe returns unknown, and a caller
+    Ollama and llama.cpp: for every other provider that probe returns unknown, and a caller
     that fell straight through to a conservative constant sized a cloud model's
     budget against a fraction of the window it actually serves — observed as a
     structured-output call truncated mid-object against a flat 8192 while the
@@ -235,8 +235,8 @@ def _bare_ollama_model_name(litellm_model_id: str) -> str:
 async def probe_runtime_capabilities(target: Any) -> RuntimeCapabilities:
     """Probe the serving runtime for ``target``'s real window and capabilities.
 
-    Ollama-only today — the only local runtime AILIENANT talks to directly.
-    A non-Ollama or unresolvable target returns :data:`_UNKNOWN_CAPABILITIES`
+    Speaks to Ollama (``/api/show``) and llama.cpp (``/props``). Any other
+    provider or an unresolvable target returns :data:`_UNKNOWN_CAPABILITIES`
     rather than guessing; the caller decides the fallback, this function never
     does. Never raises: a probe fault must degrade to unknown, not block a
     chat turn that is waiting on this result — including a malformed or
@@ -248,7 +248,20 @@ async def probe_runtime_capabilities(target: Any) -> RuntimeCapabilities:
     provider = getattr(target, "provider", None)
     api_base = getattr(target, "api_base", None)
     model_id = getattr(target, "model", None)
-    if provider != "ollama" or not api_base or not model_id:
+    if not api_base or not model_id:
+        return _UNKNOWN_CAPABILITIES
+    if provider == "llamacpp":
+        bare = _bare_openai_model_name(model_id)
+        # Keyed by server + model: several llama-servers may share one alias.
+        key = f"llamacpp|{api_base}|{bare}"
+        async with _caps_lock:
+            cached = _caps_cache.get(key)
+            if cached is not None:
+                return cached
+            probed = await _probe_llamacpp_props(api_base, bare)
+            _caps_cache[key] = probed
+            return probed
+    if provider != "ollama":
         return _UNKNOWN_CAPABILITIES
 
     bare_name = _bare_ollama_model_name(model_id)
@@ -259,6 +272,42 @@ async def probe_runtime_capabilities(target: Any) -> RuntimeCapabilities:
         probed = await _probe_ollama_show(api_base, bare_name)
         _caps_cache[bare_name] = probed
         return probed
+
+
+def _bare_openai_model_name(litellm_model_id: str) -> str:
+    """Strip litellm's ``openai/`` routing prefix (OpenAI-compatible servers)."""
+    prefix = "openai/"
+    return litellm_model_id[len(prefix):] if litellm_model_id.startswith(prefix) else litellm_model_id
+
+
+def _server_root(api_base: str) -> str:
+    """llama-server's native endpoints live beside, not under, its ``/v1`` API."""
+    base = api_base.rstrip("/")
+    return base[: -len("/v1")] if base.endswith("/v1") else base
+
+
+async def _probe_llamacpp_props(api_base: str, model: str) -> RuntimeCapabilities:
+    """Read the per-slot context window llama-server is actually serving.
+
+    ``default_generation_settings.n_ctx`` is fixed at server start (``-c`` split
+    across ``-np`` slots), so it is the served window, not an architectural
+    maximum. A router-mode server selects the model via ``?model=``; a
+    single-model server ignores the parameter. Reasoning is reported as
+    unsupported: llama-server streams it as ``reasoning_content`` on its own and
+    the OpenAI route does not take a ``thinking`` kwarg.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_CAPS_PROBE_TIMEOUT_S) as client:
+            resp = await client.get(f"{_server_root(api_base)}/props", params={"model": model})
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:  # noqa: BLE001 — a probe fault must degrade, never block a chat turn
+        logger.warning("llama.cpp /props probe failed for %s at %s: %s", model, api_base, exc)
+        return _UNKNOWN_CAPABILITIES
+    settings = data.get("default_generation_settings") if isinstance(data, dict) else None
+    n_ctx = settings.get("n_ctx") if isinstance(settings, dict) else None
+    context_length = n_ctx if isinstance(n_ctx, int) and n_ctx > 0 else None
+    return RuntimeCapabilities(context_length=context_length, supports_thinking=False)
 
 
 async def _probe_ollama_show(api_base: str, bare_name: str) -> RuntimeCapabilities:
@@ -454,7 +503,8 @@ async def resolve_num_ctx(target: Any, min_required: int) -> Optional[int]:
     ``min_required`` tokens (the caller's real prompt + max_tokens + margin),
     sized once per bare model name and only ever grown.
 
-    Returns ``None`` for a non-Ollama target, an unresolvable/malformed one, or
+    Returns ``None`` for a non-Ollama target (llama.cpp fixes its window at
+    server start, so there is nothing to size per call), an unresolvable/malformed one, or
     when the runtime probe cannot determine the model's architectural ceiling —
     the caller then omits ``num_ctx`` entirely from the request, which is
     exactly today's behaviour (a safe, unregressed fallback), never a guessed

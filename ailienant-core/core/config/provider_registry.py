@@ -17,7 +17,7 @@ Routing of the model string to litellm is captured by ``model_style``:
                         litellm recognises by name (OpenAI, Anthropic).
   - ``"openai_compat"`` → ``f"openai/{name}"`` with a custom api_base. Any
                         OpenAI-compatible server (the Chinese providers, vLLM,
-                        LM Studio, generic custom).
+                        LM Studio, llama.cpp, generic custom).
   - ``"ollama_chat"`` → ``f"ollama_chat/{name}"`` (litellm ``/api/chat`` route).
 
 ``uses_api_base`` decides whether an api_base is sent at all; ``ensure_v1``
@@ -30,6 +30,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional
+
+from shared.config import LLAMA_CPP_API_BASE
 
 ModelStyle = Literal["prefix", "bare", "openai_compat", "ollama_chat"]
 
@@ -80,6 +82,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderSpec] = {
         id="vllm", label="vLLM", model_style="openai_compat",
         is_local=True, needs_key=False, uses_api_base=True, ensure_v1=True,
         default_base_url="http://localhost:8000",
+    ),
+    # llama-server exposes an OpenAI-compatible API under /v1. Context size is fixed
+    # server-side (`-c`), so no per-call num_ctx is ever sent.
+    "llamacpp": ProviderSpec(
+        id="llamacpp", label="llama.cpp (llama-server)", model_style="openai_compat",
+        is_local=True, needs_key=False, uses_api_base=True, ensure_v1=True,
+        default_base_url=LLAMA_CPP_API_BASE,
     ),
     "custom": ProviderSpec(
         id="custom", label="Custom (OpenAI-compatible)", model_style="openai_compat",

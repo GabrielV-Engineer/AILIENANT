@@ -112,6 +112,7 @@ BYOM = *Bring Your Own Model*. This is where you tell AILIENANT which engines to
 2. **Add an endpoint.** Examples:
    - Ollama → `http://localhost:11434`
    - LM Studio → `http://localhost:1234`
+   - llama.cpp (`llama-server`) → `http://localhost:8080` (see [llama.cpp setup](#llamacpp-setup))
    - A cloud provider → its base URL + your API key
 3. Click **Test**. AILIENANT probes the endpoint and lists the models it actually found, with latency.
 4. **Map models to tiers.** AILIENANT routes work across three tiers — *Small* (fast/cheap), *Big* (heavier local), and *Cloud* (flagship). Assign a model to each tier you want to use.
@@ -125,6 +126,26 @@ BYOM = *Bring Your Own Model*. This is where you tell AILIENANT which engines to
    | **Hybrid** *(default)* | Let AILIENANT choose per task. Recommended. |
 
 Your settings are saved and applied to the next request — no restart needed.
+
+### llama.cpp setup
+
+Run one `llama-server` for chat and a second one for embeddings (used to index your workspace):
+
+```
+llama-server -m qwen2.5-coder-7b-instruct-q4_k_m.gguf --alias qwen-coder-7b --jinja -c 32768 -np 2 --port 8080
+llama-server -m nomic-embed-text-v1.5.Q8_0.gguf --embeddings --port 8081
+```
+
+- `--jinja` is required: it enables the model's chat template, tool calling, and separated reasoning.
+- `--alias` gives the model a clean id; without it the id is the GGUF file path.
+- `-c` is the **total** context, shared across the `-np` parallel slots. AILIENANT reads the
+  per-slot window from the server (`/props`) and budgets prompts against it.
+- More than one model: either run one server per model on different ports (add each as its own
+  llama.cpp endpoint and **Test** it — each model is routed to the server that listed it), or run a
+  single server in router mode (`--models-dir`), which lists every model under one endpoint.
+- The embedding server is found at `LLAMA_CPP_EMBED_API_BASE` (default `http://localhost:8081`);
+  its vector size is measured when you activate the preset. Optional overrides:
+  `AILIENANT_LLAMACPP_EMBED_MODEL`, `AILIENANT_LLAMACPP_EMBED_DIM`, `LLAMA_CPP_API_BASE`.
 
 ---
 

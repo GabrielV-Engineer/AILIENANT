@@ -55,10 +55,11 @@ function uiFromSpec(s: ProviderSpec): ProviderUi {
     };
 }
 
-// Static fallback (original 7) — only used until GET /providers resolves.
+// Static fallback — only used until GET /providers resolves.
 const FALLBACK_DEFAULTS: Record<string, ProviderUi> = {
     ollama:     { label: 'Ollama',     url: 'http://localhost:11434',    needsKey: false, keyHint: '',          description: 'Local AI runtime — no key needed', helpUrl: '', hidesBaseUrl: false },
     lmstudio:   { label: 'LM Studio',  url: 'http://localhost:1234',     needsKey: false, keyHint: '',          description: 'LM Studio local server — no key needed', helpUrl: '', hidesBaseUrl: false },
+    llamacpp:   { label: 'llama.cpp (llama-server)', url: 'http://localhost:8080', needsKey: false, keyHint: '', description: 'llama-server OpenAI-compatible API — no key needed', helpUrl: '', hidesBaseUrl: false },
     vllm:       { label: 'vLLM',       url: 'http://localhost:8000',     needsKey: false, keyHint: '',          description: 'vLLM OpenAI-compatible server', helpUrl: '', hidesBaseUrl: false },
     openai:     { label: 'OpenAI',     url: 'https://api.openai.com',    needsKey: true,  keyHint: 'sk-…',     description: 'OpenAI official API', helpUrl: '', hidesBaseUrl: true },
     openrouter: { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1', needsKey: true, keyHint: 'sk-or-…', description: 'Multi-provider routing', helpUrl: '', hidesBaseUrl: true },

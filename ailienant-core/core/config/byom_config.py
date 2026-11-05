@@ -12,10 +12,11 @@ import os
 import pathlib
 import stat
 import tempfile
-from typing import Literal, Optional
+from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from core.config.provider_registry import PROVIDER_REGISTRY
 from shared.config import DB_CATALOG_PATH
 
 logger = logging.getLogger("BYOM_CONFIG")
@@ -41,10 +42,15 @@ class EndpointConfig(BaseModel):
     name: str
     url: str
     api_key: str = ""
-    provider: Literal[
-        "ollama", "lmstudio", "vllm", "openai", "openrouter", "anthropic", "custom",
-        "google", "deepseek", "mistral", "qwen", "moonshot", "zhipu",
-    ]
+    provider: str
+
+    @field_validator("provider")
+    @classmethod
+    def _known_provider(cls, value: str) -> str:
+        # The provider registry is the single source of truth for valid ids.
+        if value not in PROVIDER_REGISTRY:
+            raise ValueError(f"unknown provider '{value}'")
+        return value
 
 
 class ModelPreset(BaseModel):
@@ -65,7 +71,7 @@ class EmbeddingTarget(BaseModel):
     set for local + custom/openrouter; api_key carries the cloud secret.
     """
     model: str                      # litellm model id, e.g. "ollama/nomic-embed-text"
-    provider: str                   # ollama | lmstudio | vllm | openai | openrouter | anthropic | custom
+    provider: str                   # a provider_registry id (ollama, lmstudio, llamacpp, openai, ...)
     api_base: Optional[str] = None  # local engine / custom base URL; None for native openai
     api_key: str = ""               # cloud key (byom_config.json is already 0600)
     dim: int = 768                  # expected vector dimension (verified dynamically at write)
@@ -83,7 +89,7 @@ class ModelTarget(BaseModel):
     cloud secret (byom_config.json is already 0600).
     """
     model: str                      # litellm model id, e.g. "ollama/llama3.1", "gpt-4o"
-    provider: str                   # ollama | lmstudio | vllm | openai | openrouter | anthropic | custom
+    provider: str                   # a provider_registry id (ollama, lmstudio, llamacpp, openai, ...)
     api_base: Optional[str] = None  # local engine / custom base URL; None for native openai
     api_key: str = ""
     is_local: bool = True
