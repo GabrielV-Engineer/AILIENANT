@@ -99,6 +99,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-239 | `~/.ailienant/run.json` is a single global file but ports are per-window — two VS Code windows on different repos share it, last writer wins; empirically demonstrated | MEDIUM | Architecture | workspace-scoped discovery slice | Floating |
 | DEBT-240 | A 4001 auth rejection has no automatic recovery — the user must invoke Restart Core from the toast | LOW | UX / robustness | after DEBT-239 settles ownership | Floating |
 | DEBT-241 | A source install must still create the backend venv by hand; the host now only diagnoses a missing one (pre-flight + dashboard guard) | LOW | Declared tradeoff (MVP) | 13.2 binary packaging | Locked |
+| DEBT-242 | URGENT INVESTIGATION: Core failed to run on a Linux VM, root cause unconfirmed — three leading hypotheses (Python < 3.11 vs pinned deps, backend/venv discovery, 45s readiness budget) | HIGH | Reliability / investigation | next available slice | Unscheduled |
 
 ---
 
@@ -1913,6 +1914,19 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Patch (declared MVP):** a pre-flight imports the launch module before spawning and, on failure, stops without retrying and names the exact setup commands; the dashboard button probes `/dashboard/` first and explains a stopped Core or an unbuilt SPA. The user still runs `pip install` themselves.
 - **Why not auto-create the venv:** 13.2 ships the Core as a per-OS binary, which removes the Python prerequisite entirely; an in-extension venv bootstrapper would be thrown away by it.
 - **Phase:** 13.2 (Binary Packaging) — when the binary path lands, the pre-flight becomes the source-checkout fallback or is removed.
+
+### DEBT-242 [HIGH · Unscheduled] — URGENT INVESTIGATION: Core did not run on a Linux VM; root cause unconfirmed
+
+- **Date:** 2026-11-04
+- **Status:** open investigation. Nothing below is verified on a real VM — the user's exact error text was not captured. Each item is a code-reading hypothesis to confirm or discard.
+- **Reproduce:** on a clean Linux VM, install the extension and the backend per `HowToUseIt.md`, open the project, read the "AILIENANT Core" output channel. Then run `python -m uvicorn main:app --port 8000` from `ailienant-core` and time it to the "startup complete" log line.
+- **Hypothesis 1 — interpreter older than the pinned dependencies need.** `ailienant-core/requirements.txt` pins `numpy==2.4.4`, `pyarrow==23.0.1`, `langchain-core==1.4.7`; numpy 2.3+ is understood to require Python >= 3.11, yet `HowToUseIt.md` states "Python 3.10+" and no `requires-python` exists anywhere. CI only runs 3.13. A 3.10 host (Ubuntu 22.04 default) would fail at `pip install`, so Core dies on import and the extension exhausts its 3 retries. Confirm: `python3 --version`, then the `pip install` output.
+- **Hypothesis 2 — backend or interpreter discovery.** `findBackendPath` (`ailienant-extension/src/providers/workspace_panel.ts`) only succeeds when a workspace folder contains `ailienant-core/main.py` or it sits beside the extension, so a packaged `.vsix` cannot find it. `findVenvPython` falls back to the system `python3` when no `venv/bin/python` or `.venv/bin/python` exists (e.g. a Windows `venv` copied across), which lacks the dependencies. `HowToUseIt.md` documents an `ailienant.coreStartCommand` setting that does not exist in the extension source or `package.json`, so there is no documented escape hatch.
+- **Hypothesis 3 — readiness budget too short for a cold, slow host.** `CORE_READY_TIMEOUT_MS = 45_000` (`providers/coreDiscovery.ts`) marks Core `crashed` even if it is still importing (litellm, langgraph, lancedb, ~25 tree-sitter grammars) and initialising its databases on a low-CPU/RAM VM. Related to DEBT-238 (overlapping readiness budgets) and to the hardware-blind timeout class in DEBT-191/195.
+- **Fourth candidate, if all three are ruled out:** the model endpoint is unreachable from the VM (Ollama/LM Studio on the host while `localhost` resolves to the VM) — Core boots, tasks fail.
+- **Docker is not a suspect:** `resolve_default_adapter` (`core/sandbox.py`) bounds its probe and degrades to Wasm / NativeHITL.
+- **Done when:** the real cause is reproduced and recorded here, and each confirmed hypothesis has its own fix entry (a `requires-python` guard or an install-time version check; a documented or implemented start-command override and a clear "no venv found" message; a hardware-scaled readiness budget). Correct `HowToUseIt.md`'s Python floor and the phantom `coreStartCommand` reference in the same change.
+- **Phase:** unscheduled — investigate before the next release-facing slice.
 
 ---
 
